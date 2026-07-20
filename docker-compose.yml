@@ -1,4 +1,4 @@
-# Pake Cloud Builder — works both locally and as a Coolify "Docker Compose" resource.
+# Pake Cloud Builder — works locally and as a Coolify "Docker Compose" resource.
 #
 # COOLIFY DEPLOY (see README for the click-path):
 #   Resource type : Docker Compose (Git-based)
@@ -9,17 +9,16 @@
 # fields in its Environment Variables tab. Hardcoded values would not appear.
 
 services:
-  # Service name stays a single word: Coolify's magic vars can't combine
-  # underscores in the identifier with a port suffix.
+  # Single-word service name: Coolify's magic variables cannot combine an
+  # underscore in the identifier with a port suffix.
   pake:
     build:
       context: .
       dockerfile: Dockerfile
 
     environment:
-      # Coolify generates the domain + Traefik route from this. Leave it
-      # valueless; override the domain in Coolify's UI if you want your own.
-      # Locally this is simply ignored.
+      # Coolify generates the domain and Traefik route from this. Leave it
+      # valueless; override the domain in Coolify's UI to use your own.
       - SERVICE_FQDN_PAKE_3000
 
       # ---- required (set these in Coolify > Environment Variables) ----
@@ -30,13 +29,13 @@ services:
       # ---- optional, with sane defaults ----
       - WORKFLOW_FILE=${WORKFLOW_FILE:-build.yml}
       - GIT_REF=${GIT_REF:-main}
-      - MAX_ACTIVE=${MAX_ACTIVE:-8}
-      # Artifacts on disk are only reachable via in-memory job records, so
-      # anything left by a previous container is unreachable. Purge on boot to
-      # stop the volume growing without bound. Set false if you add persistence.
-      - PURGE_ON_START=${PURGE_ON_START:-true}
+      # Each build buffers its artifact zips in memory while unpacking, so raise
+      # this only if the host has the RAM for that many at once.
+      - MAX_ACTIVE=${MAX_ACTIVE:-4}
+      # Builds older than this are deleted along with their installers.
+      - RETENTION_DAYS=${RETENTION_DAYS:-7}
       - PORT=3000
-      - BUILD_DIR=/data/builds
+      - DATA_DIR=/data
 
     # Coolify's proxy (Traefik) routes to the container port; no host binding.
     expose:
@@ -48,10 +47,13 @@ services:
     # ports:
     #   - "3000:3000"
 
+    # One volume for the whole data dir: it holds jobs.db (build history) as
+    # well as builds/ (the mirrored installers). Mounting only builds/ would
+    # leave the database on the container layer and lose history on redeploy.
     volumes:
-      - pake-builds:/data/builds
+      - pake-data:/data
 
-    # node:22-slim has no curl/wget, so probe with Node's built-in fetch.
+    # node:22-slim ships no curl or wget, so probe with Node's built-in fetch.
     healthcheck:
       test:
         - CMD
@@ -66,4 +68,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  pake-builds:
+  pake-data:

@@ -5,206 +5,500 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Pake Cloud Builder</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
-<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
 <style>
   :root {
-    --teal:#00c3aa; --teal-d:#009e8a;
-    --bg:#f6f8f8; --card:#fff; --fg:#16201e; --muted:#5c6b68;
-    --line:#e3e9e8; --radius:14px; --mono:'JetBrains Mono',ui-monospace,monospace;
-    --ok:#1a9d6b; --err:#d5453b; --warn:#b8860b; --run:#0f6e56;
+    --paper:#f4f7f6; --surface:#fff; --sunken:#eef3f2;
+    --ink:#0e1614; --muted:#5c6c68; --line:#dde6e3;
+    --teal:#00c3aa; --teal-ink:#00705f; --amber:#9a6708; --red:#bb3428; --green:#12805a;
+    --ui:'Cairo',system-ui,sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
   }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#0e1413; --card:#151d1b; --fg:#e7efed; --muted:#93a29f; --line:#243230; }
+  @media (prefers-color-scheme:dark) {
+    :root {
+      --paper:#0b1110; --surface:#141c1a; --sunken:#0e1615;
+      --ink:#e9f1ef; --muted:#8fa19d; --line:#243230;
+      --teal:#00c3aa; --teal-ink:#3ddcc5; --amber:#d9a441; --red:#f0776a; --green:#48c79b;
+    }
   }
   * { box-sizing:border-box; }
-  body { margin:0; font-family:'Cairo',system-ui,sans-serif; background:var(--bg); color:var(--fg); line-height:1.5; }
-  .wrap { max-width:880px; margin:0 auto; padding:32px 20px 80px; }
-  header { display:flex; align-items:center; gap:12px; margin-bottom:6px; }
-  .logo { font-family:var(--mono); font-weight:600; font-size:20px; color:var(--teal-d); }
-  .logo b { color:var(--fg); }
-  .cursor { display:inline-block; width:8px; background:var(--teal); animation:blink 1.1s step-end infinite; }
-  @keyframes blink { 50% { opacity:0; } }
-  .sub { color:var(--muted); font-size:14px; margin:0 0 22px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:22px; margin-bottom:22px; }
-  label.fl { display:block; font-size:13px; font-weight:600; margin:0 0 6px; }
-  .hint { font-weight:400; color:var(--muted); }
-  input[type=text],input[type=url],input[type=number] {
-    width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:10px;
-    background:var(--bg); color:var(--fg); font:inherit; font-size:14px;
+  html { -webkit-text-size-adjust:100%; }
+  body {
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:var(--ui); font-size:16px; line-height:1.55;
   }
-  input:focus { outline:2px solid color-mix(in srgb,var(--teal) 55%,transparent); border-color:var(--teal); }
-  .row { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
-  .field { margin-bottom:16px; }
-  .plats { display:flex; gap:18px; flex-wrap:wrap; }
-  .plats label { display:flex; align-items:center; gap:8px; font-weight:500; cursor:pointer; }
-  .plats input { accent-color:var(--teal); width:16px; height:16px; }
-  button { background:var(--teal); color:#06231f; font:inherit; font-weight:700; font-size:15px;
-           border:0; border-radius:10px; padding:12px 22px; cursor:pointer; transition:background .15s; }
-  button:hover { background:var(--teal-d); }
-  button:disabled { opacity:.55; cursor:not-allowed; }
-  .jobs h2 { font-size:15px; margin:0 0 12px; }
-  .job { border:1px solid var(--line); border-radius:var(--radius); padding:14px 16px; margin-bottom:14px; background:var(--card); }
-  .job-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
-  .job-name { font-weight:700; }
-  .job-url { color:var(--muted); font-size:12px; word-break:break-all; }
-  .status-badge { font-size:12px; font-weight:600; padding:3px 10px; border-radius:999px; white-space:nowrap; }
-  .s-queued,.s-dispatching,.s-locating { background:#e7ecec; color:#5c6b68; }
-  .s-running,.s-collecting { background:color-mix(in srgb,var(--teal) 20%,transparent); color:var(--teal-d); }
-  .s-done { background:color-mix(in srgb,var(--ok) 18%,transparent); color:var(--ok); }
-  .s-error { background:color-mix(in srgb,var(--err) 16%,transparent); color:var(--err); }
-  .legs { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0 0; }
-  .leg { font-size:12px; font-weight:600; padding:3px 10px; border-radius:999px; border:1px solid var(--line); display:flex; align-items:center; gap:6px; }
-  .dot { width:8px; height:8px; border-radius:50%; }
-  .d-queued { background:#b4b2a9; } .d-in_progress { background:var(--warn); animation:pulse 1s ease-in-out infinite; }
-  .d-completed { background:var(--ok); } .d-failed { background:var(--err); }
-  @keyframes pulse { 50% { opacity:.35; } }
-  .runlink { font-size:12px; color:var(--teal-d); text-decoration:none; font-weight:600; }
-  .runlink:hover { text-decoration:underline; }
-  pre.log { font-family:var(--mono); font-size:12px; background:#0c1211; color:#c9d6d3; border-radius:10px;
-            padding:12px; max-height:220px; overflow:auto; margin:12px 0 0; white-space:pre-wrap; word-break:break-word; }
-  .os-group { margin-top:12px; }
-  .os-title { font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin-bottom:6px; }
-  .dl { display:flex; gap:10px; flex-wrap:wrap; }
-  .dl a { text-decoration:none; font-size:13px; font-weight:600; color:var(--teal-d); border:1px solid var(--teal); border-radius:10px; padding:8px 14px; }
-  .dl a:hover { background:var(--teal); color:#06231f; }
-  .msg { font-size:13px; margin-top:10px; }
-  .msg.warn { color:var(--warn); } .msg.err { color:var(--err); }
-  .empty { color:var(--muted); font-size:14px; }
+  :focus-visible { outline:2px solid var(--teal); outline-offset:2px; border-radius:2px; }
+
+  .page { max-width:820px; margin:0 auto; padding:40px 20px 96px; }
+
+  /* ---- masthead ---------------------------------------------------------- */
+  .mark {
+    font-family:var(--mono); font-weight:700; font-size:19px;
+    color:var(--teal-ink); letter-spacing:-.02em;
+  }
+  .mark b { color:var(--ink); font-weight:700; }
+  .caret {
+    display:inline-block; width:.55em; height:1.05em; margin-left:.1em;
+    background:var(--teal); vertical-align:-.18em; animation:caret 1.15s steps(1) infinite;
+  }
+  @keyframes caret { 50% { opacity:0; } }
+  .lede { color:var(--muted); font-size:15px; margin:10px 0 30px; max-width:60ch; }
+
+  /* ---- build spec form --------------------------------------------------- */
+  .spec {
+    background:var(--surface); border:1px solid var(--line);
+    border-radius:12px; padding:24px;
+  }
+  .spec h2, .builds h2 {
+    font-size:12px; font-weight:700; letter-spacing:.09em; text-transform:uppercase;
+    color:var(--muted); margin:0 0 18px;
+  }
+  .field { margin-bottom:18px; }
+  .field > label { display:block; font-size:13.5px; font-weight:600; margin-bottom:6px; }
+  .field .aside { font-weight:400; color:var(--muted); }
+  .field input {
+    width:100%; padding:11px 13px; font:inherit; font-size:14.5px;
+    color:var(--ink); background:var(--sunken);
+    border:1px solid var(--line); border-radius:8px;
+  }
+  .field input::placeholder { color:var(--muted); opacity:.75; }
+  .field input:focus-visible { border-color:var(--teal); background:var(--surface); }
+  .pair { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+
+  fieldset.targets { border:0; margin:0 0 20px; padding:0; }
+  fieldset.targets legend { padding:0; font-size:13.5px; font-weight:600; margin-bottom:8px; }
+  .targets .opts { display:flex; gap:10px; flex-wrap:wrap; }
+  .targets .opt {
+    display:flex; align-items:center; gap:8px; cursor:pointer;
+    border:1px solid var(--line); border-radius:8px; padding:8px 13px;
+    font-family:var(--mono); font-size:13px; background:var(--surface);
+  }
+  .targets .opt:hover { border-color:var(--teal); }
+  .targets .opt input { accent-color:var(--teal); width:15px; height:15px; margin:0; }
+  .targets .opt .fmt { color:var(--muted); font-size:11.5px; }
+
+  .go {
+    font:inherit; font-weight:700; font-size:15px; color:#04211d;
+    background:var(--teal); border:0; border-radius:8px;
+    padding:12px 24px; min-height:44px; cursor:pointer;
+  }
+  .go:hover:not(:disabled) { background:var(--teal-ink); color:var(--surface); }
+  .go:disabled { opacity:.5; cursor:not-allowed; }
+  .formerr { color:var(--red); font-size:13.5px; margin:12px 0 0; }
+  .formerr:empty { display:none; }
+
+  /* ---- build list -------------------------------------------------------- */
+  .builds { margin-top:38px; }
+  .empty {
+    color:var(--muted); font-size:14.5px; border:1px dashed var(--line);
+    border-radius:12px; padding:22px; margin:0;
+  }
+  .build { display:flex; gap:16px; padding:20px 0; border-top:1px solid var(--line); }
+  .build:first-of-type { border-top:0; }
+  .rail { flex:0 0 3px; border-radius:2px; background:var(--muted); align-self:stretch; }
+  .build[data-state=running] .rail, .build[data-state=collecting] .rail,
+  .build[data-state=dispatching] .rail, .build[data-state=locating] .rail { background:var(--amber); }
+  .build[data-state=done] .rail { background:var(--green); }
+  .build[data-state=error] .rail { background:var(--red); }
+  .body { flex:1 1 auto; min-width:0; }
+
+  .top { display:flex; justify-content:space-between; align-items:baseline; gap:14px; }
+  .title { font-size:17px; font-weight:700; margin:0; }
+  .origin {
+    font-family:var(--mono); font-size:12.5px; color:var(--muted);
+    margin:2px 0 0; overflow-wrap:anywhere;
+  }
+  .state { font-size:12.5px; font-weight:700; white-space:nowrap; color:var(--muted); }
+  .build[data-state=running] .state, .build[data-state=collecting] .state,
+  .build[data-state=dispatching] .state, .build[data-state=locating] .state { color:var(--amber); }
+  .build[data-state=done] .state { color:var(--green); }
+  .build[data-state=error] .state { color:var(--red); }
+
+  /* signature: one lane per platform, running in parallel like the matrix does */
+  .lanes { margin:16px 0 0; display:grid; gap:9px; }
+  .lane { display:grid; grid-template-columns:74px 1fr auto; align-items:center; gap:12px; }
+  .lane-os { font-family:var(--mono); font-size:12.5px; font-weight:500; }
+  .track { height:3px; border-radius:2px; background:var(--line); overflow:hidden; }
+  .track i { display:block; height:100%; width:0; background:var(--muted); }
+  .lane[data-state=in_progress] .track i {
+    width:40%; background:var(--amber);
+    animation:slide 1.4s ease-in-out infinite;
+  }
+  @keyframes slide { 0% { transform:translateX(-105%); } 100% { transform:translateX(255%); } }
+  .lane[data-state=completed] .track i { width:100%; background:var(--green); }
+  .lane[data-state=failed] .track i { width:100%; background:var(--red); }
+  .lane-note { font-family:var(--mono); font-size:11.5px; color:var(--muted); }
+  .lane[data-state=failed] .lane-note { color:var(--red); }
+
+  .drops { grid-column:2 / -1; display:flex; flex-wrap:wrap; gap:8px; margin-top:2px; }
+  .drop {
+    display:inline-flex; align-items:baseline; gap:7px; text-decoration:none;
+    font-family:var(--mono); font-size:12.5px; font-weight:500; color:var(--teal-ink);
+    border:1px solid var(--line); border-radius:6px; padding:6px 11px; background:var(--surface);
+  }
+  .drop:hover { border-color:var(--teal); background:var(--sunken); }
+  .drop .size { color:var(--muted); font-weight:400; font-size:11px; }
+
+  .runlink {
+    font-family:var(--mono); font-size:11.5px; color:var(--teal-ink);
+    text-decoration:none; border-bottom:1px solid transparent;
+  }
+  .runlink:hover { border-bottom-color:currentColor; }
+
+  details.log { margin-top:14px; }
+  details.log summary {
+    cursor:pointer; font-family:var(--mono); font-size:11.5px;
+    color:var(--muted); list-style:none;
+  }
+  details.log summary::-webkit-details-marker { display:none; }
+  details.log summary::before { content:'\25b8  '; }
+  details.log[open] summary::before { content:'\25be  '; }
+  details.log pre {
+    font-family:var(--mono); font-size:12px; line-height:1.6;
+    background:var(--sunken); color:var(--ink); border:1px solid var(--line);
+    border-radius:8px; padding:12px 14px; margin:9px 0 0;
+    max-height:210px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+  .sr-only {
+    position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+    overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0;
+  }
+  .notice { font-size:13px; margin:12px 0 0; }
+  .notice.warn { color:var(--amber); }
+  .notice.bad { color:var(--red); }
+
+  @media (max-width:560px) {
+    .pair { grid-template-columns:1fr; }
+    .lane { grid-template-columns:64px 1fr; }
+    .lane-note { grid-column:2; }
+  }
+  @media (prefers-reduced-motion:reduce) {
+    *, *::before, *::after { animation:none !important; transition:none !important; }
+    .caret { opacity:1; }
+    .lane[data-state=in_progress] .track i { width:100%; opacity:.55; }
+  }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header><span class="logo">pake<b>&gt;</b><span class="cursor">&nbsp;</span></span></header>
-  <p class="sub">Turn any URL into desktop apps for Linux, Windows &amp; macOS. Builds run on GitHub Actions — this app just orchestrates and hands you the installers.</p>
+<div class="page">
+  <header>
+    <div class="mark">pake<b>&gt;</b><span class="caret" aria-hidden="true"></span></div>
+    <p class="lede">Package a website as native desktop installers. Each platform is compiled on its own GitHub runner, and the finished installers are mirrored here for download.</p>
+  </header>
 
-  <div class="card">
+  <section class="spec" aria-labelledby="spec-h">
+    <h2 id="spec-h">Build spec</h2>
+
     <div class="field">
-      <label class="fl" for="url">Website URL</label>
-      <input id="url" type="url" placeholder="https://example.com" />
+      <label for="url">Website URL</label>
+      <input id="url" type="url" inputmode="url" placeholder="https://example.com" autocomplete="off" />
     </div>
+
     <div class="field">
-      <label class="fl" for="name">App name <span class="hint">(1&ndash;50 chars, letters/digits/space/-/_)</span></label>
-      <input id="name" type="text" placeholder="My App" />
+      <label for="name">App name</label>
+      <input id="name" type="text" placeholder="My App" autocomplete="off" />
     </div>
+
     <div class="field">
-      <label class="fl" for="icon">Icon URL <span class="hint">(optional &mdash; png/ico/icns)</span></label>
-      <input id="icon" type="url" placeholder="https://&hellip;/icon.png" />
+      <label for="icon">Icon URL <span class="aside">&mdash; optional, .png / .ico / .icns</span></label>
+      <input id="icon" type="url" inputmode="url" placeholder="https://example.com/icon.png" autocomplete="off" />
     </div>
-    <div class="row field">
-      <div><label class="fl" for="width">Width</label><input id="width" type="number" value="1200" min="320" max="5000" /></div>
-      <div><label class="fl" for="height">Height</label><input id="height" type="number" value="780" min="240" max="5000" /></div>
-    </div>
-    <div class="field">
-      <label class="fl">Platforms</label>
-      <div class="plats">
-        <label><input type="checkbox" value="linux" checked /> Linux <span class="hint">(.deb .rpm .AppImage)</span></label>
-        <label><input type="checkbox" value="windows" checked /> Windows <span class="hint">(.msi)</span></label>
-        <label><input type="checkbox" value="macos" checked /> macOS <span class="hint">(.dmg)</span></label>
+
+    <div class="pair field">
+      <div>
+        <label for="width">Window width</label>
+        <input id="width" type="number" value="1200" min="320" max="5000" />
+      </div>
+      <div>
+        <label for="height">Window height</label>
+        <input id="height" type="number" value="780" min="240" max="5000" />
       </div>
     </div>
-    <button id="build">Build apps</button>
-  </div>
 
-  <div class="jobs">
-    <h2>Builds</h2>
-    <div id="jobs"><p class="empty">No builds yet.</p></div>
-  </div>
+    <fieldset class="targets">
+      <legend>Platforms</legend>
+      <div class="opts">
+        <label class="opt"><input type="checkbox" value="linux" checked /> linux <span class="fmt">deb &middot; rpm &middot; AppImage</span></label>
+        <label class="opt"><input type="checkbox" value="windows" checked /> windows <span class="fmt">msi</span></label>
+        <label class="opt"><input type="checkbox" value="macos" checked /> macos <span class="fmt">dmg</span></label>
+      </div>
+    </fieldset>
+
+    <button class="go" id="go">Start build</button>
+    <p class="formerr" id="formerr" role="alert"></p>
+  </section>
+
+  <section class="builds" aria-labelledby="builds-h">
+    <h2 id="builds-h">Builds</h2>
+    <p class="sr-only" id="announce" aria-live="polite"></p>
+    <div id="list" aria-busy="false">
+      <p class="empty">Nothing built yet. Enter a URL above &mdash; the platform lanes fill in as each runner finishes.</p>
+    </div>
+  </section>
 </div>
 
 <script>
-const jobsEl = document.getElementById('jobs');
-const tracked = new Map(); // id -> logCount
+const OS_ORDER = ['linux', 'windows', 'macos'];
+const EMPTY_COPY = 'Nothing built yet. Enter a URL above \u2014 the platform lanes fill in as each runner finishes.';
+const list = document.getElementById('list');
+const announcer = document.getElementById('announce');
+const announced = new Set();
+const formError = document.getElementById('formerr');
+const rendered = new Map(); // job id -> { root, logLines, nodes }
 
-async function submit() {
-  const btn = document.getElementById('build');
-  const platforms = [...document.querySelectorAll('.plats input:checked')].map((c) => c.value);
-  const payload = {
-    url: document.getElementById('url').value.trim(),
-    name: document.getElementById('name').value.trim(),
-    icon: document.getElementById('icon').value.trim() || undefined,
-    width: Number(document.getElementById('width').value) || undefined,
-    height: Number(document.getElementById('height').value) || undefined,
-    platforms,
-  };
-  btn.disabled = true;
-  try {
-    const res = await fetch('/api/builds', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    const data = await res.json();
-    if (!res.ok) { alert(data.error || 'Build request failed'); return; }
-    tracked.set(data.id, 0);
-    await refresh();
-  } catch (e) { alert('Network error: ' + e.message); }
-  finally { btn.disabled = false; }
+const el = (tag, cls, text) => {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text != null) node.textContent = text;
+  return node;
+};
+const setText = (node, text) => { if (node.textContent !== text) node.textContent = text; };
+const setAttr = (node, name, value) => { if (node.getAttribute(name) !== value) node.setAttribute(name, value); };
+
+function fileSize(bytes) {
+  if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+  return Math.max(1, Math.round(bytes / 1024)) + ' KB';
 }
 
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
-const sizeKB = (n) => n >= 1048576 ? (n/1048576).toFixed(1)+' MB' : Math.max(1, Math.round(n/1024))+' KB';
-
-function legPill(leg) {
-  const cls = leg.conclusion === 'failure' ? 'd-failed'
-    : leg.status === 'completed' ? 'd-completed'
-    : leg.status === 'in_progress' ? 'd-in_progress' : 'd-queued';
-  return `<span class="leg"><span class="dot ${cls}"></span>${esc(leg.os)}</span>`;
+function elapsed(since) {
+  const secs = Math.round((Date.now() - since) / 1000);
+  if (secs < 60) return secs + 's ago';
+  if (secs < 3600) return Math.floor(secs / 60) + 'm ago';
+  return Math.floor(secs / 3600) + 'h ago';
 }
 
-function downloads(job) {
-  if (!job.artifacts || !job.artifacts.length) return '';
-  const byOs = {};
-  for (const a of job.artifacts) (byOs[a.os] ||= []).push(a);
-  return Object.entries(byOs).map(([os, files]) => `
-    <div class="os-group">
-      <div class="os-title">${esc(os)}</div>
-      <div class="dl">${files.map((f) =>
-        `<a href="/api/builds/${job.id}/file/${encodeURI(f.file)}">\u2193 ${esc(f.name)} <span class="hint">${sizeKB(f.size)}</span></a>`
-      ).join('')}</div>
-    </div>`).join('');
+const STATE_WORDS = {
+  queued: 'queued', dispatching: 'dispatching', locating: 'finding run',
+  running: 'building', collecting: 'fetching installers', done: 'ready', error: 'failed',
+};
+
+function laneState(leg) {
+  if (!leg) return 'queued';
+  if (leg.conclusion && leg.conclusion !== 'success') return 'failed';
+  return leg.status;
 }
 
-function render(list) {
-  if (!list.length) { jobsEl.innerHTML = '<p class="empty">No builds yet.</p>'; return; }
-  jobsEl.innerHTML = list.map((j) => {
-    const run = j.runUrl ? `<a class="runlink" href="${j.runUrl}" target="_blank" rel="noopener">view run &nearr;</a>` : '';
-    const legs = (j.legs && j.legs.length) ? `<div class="legs">${j.legs.map(legPill).join('')}</div>` : '';
-    const warn = j.warning ? `<div class="msg warn">${esc(j.warning)}</div>` : '';
-    const err = j.error ? `<div class="msg err">${esc(j.error)}</div>` : '';
-    return `<div class="job">
-      <div class="job-head">
-        <div>
-          <div class="job-name">${esc(j.input.name)} ${run}</div>
-          <div class="job-url">${esc(j.input.url)} \u00b7 ${esc(j.input.platforms.join(', '))}</div>
-        </div>
-        <span class="status-badge s-${j.status}">${j.status}</span>
-      </div>
-      ${legs}
-      <pre class="log" id="log-${j.id}"></pre>
-      ${downloads(j)}
-      ${warn}${err}
-    </div>`;
-  }).join('');
+function laneNote(leg, jobState) {
+  if (!leg) return jobState === 'queued' ? 'waiting' : 'not started';
+  if (leg.conclusion && leg.conclusion !== 'success') return leg.conclusion;
+  if (leg.status === 'completed') return 'built';
+  if (leg.status === 'in_progress') return 'compiling';
+  return leg.status;
+}
+
+/* Build the DOM for one job once; later polls mutate it in place so scroll
+   position, text selection and <details> toggles survive. */
+function createBuild(job) {
+  const root = el('article', 'build');
+  root.dataset.id = job.id;
+
+  const rail = el('div', 'rail');
+  const body = el('div', 'body');
+
+  const top = el('div', 'top');
+  const heading = el('div');
+  const title = el('h3', 'title', job.input.name);
+  const origin = el('p', 'origin', job.input.url);
+  heading.append(title, origin);
+
+  const right = el('div');
+  right.style.textAlign = 'right';
+  const state = el('div', 'state');
+  const runlink = el('a', 'runlink');
+  runlink.target = '_blank';
+  runlink.rel = 'noopener';
+  right.append(state, runlink);
+  top.append(heading, right);
+
+  const lanes = el('div', 'lanes');
+  const laneNodes = new Map();
+  for (const os of OS_ORDER) {
+    if (!job.input.platforms.includes(os)) continue;
+    const lane = el('div', 'lane');
+    const osLabel = el('span', 'lane-os', os);
+    const track = el('span', 'track');
+    track.append(el('i'));
+    const note = el('span', 'lane-note');
+    const drops = el('div', 'drops');
+    lane.append(osLabel, track, note, drops);
+    lanes.append(lane);
+    laneNodes.set(os, { lane, note, drops });
+  }
+
+  const logBox = el('details', 'log');
+  const pre = el('pre');
+  logBox.append(el('summary', null, 'Log'), pre);
+  logBox.open = job.status !== 'done' && job.status !== 'error';
+
+  const notice = el('p', 'notice');
+  notice.hidden = true;
+
+  body.append(top, lanes, logBox, notice);
+  root.append(rail, body);
+
+  return { root, logLines: 0, nodes: { title, origin, state, runlink, laneNodes, pre, notice } };
+}
+
+function updateBuild(entry, job) {
+  const { root, nodes } = entry;
+  setAttr(root, 'data-state', job.status);
+  setText(nodes.title, job.input.name);
+  setText(nodes.origin, job.input.url + ' \u00b7 ' + elapsed(job.createdAt));
+  setText(nodes.state, STATE_WORDS[job.status] ?? job.status);
+
+  if (job.runUrl) {
+    nodes.runlink.hidden = false;
+    nodes.runlink.href = job.runUrl;
+    setText(nodes.runlink, job.runId ? 'run ' + job.runId : 'view run');
+  } else {
+    nodes.runlink.hidden = true;
+  }
+
+  const legByOs = new Map((job.legs || []).map((leg) => [leg.os, leg]));
+  const filesByOs = new Map();
+  for (const artifact of job.artifacts || []) {
+    if (!filesByOs.has(artifact.os)) filesByOs.set(artifact.os, []);
+    filesByOs.get(artifact.os).push(artifact);
+  }
+
+  for (const [os, laneNode] of nodes.laneNodes) {
+    const leg = legByOs.get(os);
+    setAttr(laneNode.lane, 'data-state', laneState(leg));
+    setText(laneNode.note, laneNote(leg, job.status));
+
+    const files = filesByOs.get(os) || [];
+    if (laneNode.drops.childElementCount !== files.length) {
+      laneNode.drops.replaceChildren(
+        ...files.map((file) => {
+          const link = el('a', 'drop');
+          link.href = '/api/builds/' + job.id + '/file/' + encodeURI(file.file);
+          link.append(document.createTextNode('\u2193 ' + file.name), el('span', 'size', fileSize(file.size)));
+          return link;
+        }),
+      );
+    }
+  }
+
+  if (job.error) {
+    nodes.notice.hidden = false;
+    nodes.notice.className = 'notice bad';
+    setText(nodes.notice, job.error);
+  } else if (job.warning) {
+    nodes.notice.hidden = false;
+    nodes.notice.className = 'notice warn';
+    setText(nodes.notice, job.warning);
+  } else {
+    nodes.notice.hidden = true;
+  }
+}
+
+function appendLog(entry, lines) {
+  if (!lines || !lines.length) return;
+  const pre = entry.nodes.pre;
+  // Only follow the tail if the reader is already at the bottom.
+  const pinned = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 24;
+  pre.textContent += lines.join('\n') + '\n';
+  if (pinned) pre.scrollTop = pre.scrollHeight;
 }
 
 async function refresh() {
-  const res = await fetch('/api/builds');
-  const { jobs } = await res.json();
-  render(jobs);
-  await Promise.all(jobs.map(async (j) => {
-    const seen = tracked.get(j.id) ?? 0;
-    tracked.set(j.id, seen);
-    const r = await fetch(`/api/builds/${j.id}?after=${seen}`);
-    const d = await r.json();
-    const pre = document.getElementById(`log-${j.id}`);
-    if (pre) {
-      if (seen === 0) pre.textContent = '';
-      if (d.log && d.log.length) pre.textContent += d.log.join('\n') + '\n';
-      pre.scrollTop = pre.scrollHeight;
-      tracked.set(j.id, d.logCount);
+  let jobs;
+  try {
+    const response = await fetch('/api/builds');
+    ({ jobs } = await response.json());
+  } catch {
+    return; // transient; the next tick retries
+  }
+
+  if (!jobs.length) {
+    if (!list.querySelector('.empty')) {
+      list.replaceChildren(el('p', 'empty', EMPTY_COPY));
+      rendered.clear();
     }
-  }));
+    return;
+  }
+  const placeholder = list.querySelector('.empty');
+  if (placeholder) placeholder.remove();
+
+  for (const [id, entry] of rendered) {
+    if (!jobs.some((job) => job.id === id)) {
+      entry.root.remove();
+      rendered.delete(id);
+    }
+  }
+
+  let previous = null;
+  for (const job of jobs) {
+    let entry = rendered.get(job.id);
+    if (!entry) {
+      entry = createBuild(job);
+      rendered.set(job.id, entry);
+    }
+    updateBuild(entry, job);
+    // Keep newest-first order without rebuilding any existing node.
+    const expected = previous ? previous.nextElementSibling : list.firstElementChild;
+    if (expected !== entry.root) {
+      if (previous) previous.after(entry.root);
+      else list.prepend(entry.root);
+    }
+    previous = entry.root;
+
+    const detail = await fetch('/api/builds/' + job.id + '?after=' + entry.logLines)
+      .then((r) => r.json())
+      .catch(() => null);
+    if (detail) {
+      appendLog(entry, detail.log);
+      entry.logLines = detail.logCount;
+    }
+  }
+
+  for (const job of jobs) {
+    if (!['done', 'error'].includes(job.status) || announced.has(job.id)) continue;
+    announced.add(job.id);
+    announcer.textContent =
+      job.status === 'done'
+        ? job.input.name + ' finished building. ' + (job.artifacts || []).length + ' installers ready.'
+        : job.input.name + ' failed to build.';
+  }
+
+  list.setAttribute('aria-busy', jobs.some((job) => !['done', 'error'].includes(job.status)) ? 'true' : 'false');
 }
 
-document.getElementById('build').addEventListener('click', submit);
+async function startBuild() {
+  const go = document.getElementById('go');
+  const platforms = [...document.querySelectorAll('.targets input:checked')].map((box) => box.value);
+  formError.textContent = '';
+  go.disabled = true;
+  try {
+    const response = await fetch('/api/builds', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: document.getElementById('url').value.trim(),
+        name: document.getElementById('name').value.trim(),
+        icon: document.getElementById('icon').value.trim() || undefined,
+        width: Number(document.getElementById('width').value) || undefined,
+        height: Number(document.getElementById('height').value) || undefined,
+        platforms,
+      }),
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      formError.textContent = body.error || 'The build could not be started.';
+      return;
+    }
+    await refresh();
+  } catch {
+    formError.textContent = 'Could not reach the server. Check that it is still running.';
+  } finally {
+    go.disabled = false;
+  }
+}
+
+document.getElementById('go').addEventListener('click', startBuild);
 refresh();
-setInterval(refresh, 2000);
+setInterval(refresh, 2500);
 </script>
 </body>
 </html>

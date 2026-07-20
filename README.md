@@ -58,6 +58,14 @@ Enter a URL, a name, tick the platforms, hit **Build apps**. You'll see the run 
 
 ---
 
+## Build history and retention
+
+Jobs are written to SQLite (`/data/jobs.db`, via Node's built-in `node:sqlite` — no dependency) at every state change, which has three consequences worth knowing:
+
+- **History survives redeploys.** The build list and its download links come back after a restart, so an installer stays reachable for the whole retention window.
+- **Interrupted builds reconnect.** A redeploy mid-build doesn't abandon the run — GitHub is still executing it. On boot the app re-attaches by build id and resumes following it. Re-attaching never dispatches a second run, so a restart can't double-build.
+- **Disk is bounded.** An hourly sweep deletes jobs past `RETENTION_DAYS` along with their files, and removes any directory with no surviving record. Live builds are never swept.
+
 ## How it works (the four steps)
 
 1. **Dispatch** — `POST …/actions/workflows/build.yml/dispatches` with the inputs and a unique `build_id`. Returns `204` with no run id.
@@ -69,6 +77,28 @@ All of this lives in `src/github.ts` (API) and `src/jobs.ts` (orchestration).
 
 ---
 
+## Deploying on Coolify
+
+The app is a good Coolify citizen: tiny, stateless-ish, and it does no compiling itself (GitHub's runners do), so it runs comfortably on a small VPS.
+
+1. Push this project to a Git repo (the app only — the `builder-repo/` contents go to your **separate public** builder repo).
+2. In Coolify: **Create New Resource → Docker Compose**, point it at the repo.
+3. If `docker-compose.yml` sits in a subfolder (e.g. `server/`), set **Base Directory** to `/server`.
+4. Under **Environment Variables**, set the three required values — they appear automatically because the compose file references them as `${VAR}`:
+   - `GITHUB_OWNER`, `GITHUB_REPO`, `GITHUB_TOKEN` (mark the token **sensitive** so Coolify encrypts it)
+5. Deploy. Coolify generates a domain from `SERVICE_FQDN_PAKE_3000` and wires Traefik to port 3000 — or set your own domain in the UI.
+
+**Design choices that matter here:**
+
+- **No published ports.** The service uses `expose`, so Traefik reaches it on the container network and nothing binds on the host. For local use, uncomment the `ports:` block.
+- **One volume at `/data`**, holding both `jobs.db` and `builds/`. Mounting only `builds/` would leave the database on the container layer, so history would vanish on every redeploy.
+- **`RETENTION_DAYS=7`.** Builds older than this are dropped and their installers deleted, which is what keeps the volume from growing without bound.
+- **Health check** hits `/api/health` using Node's built-in `fetch` (the `node:22-slim` base has no `curl`/`wget`), so Coolify gets true readiness rather than "container started".
+
+> **Put auth in front of it.** On a public domain, anyone who finds the URL can trigger builds against your token and fill your disk. Restrict it before exposing it — Coolify's built-in Basic Auth, an OAuth/forward-auth middleware, a Cloudflare Access policy, or simply keeping the domain on your Tailnet.
+
+---
+
 ## Limits & notes
 
 - **Output formats:** Linux produces **`.deb` + `.rpm` + `.AppImage`**, Windows `.msi`, macOS `.dmg`.
@@ -76,7 +106,8 @@ All of this lives in `src/github.ts` (API) and `src/jobs.ts` (orchestration).
 - **`--targets` is platform-dependent:** on Linux it selects *formats* (`deb,rpm,appimage`, with per-format failures isolated so `.deb`/`.rpm` still ship if AppImage's FUSE step fails). On **Windows and macOS it selects *architecture*** (`x64`/`arm64`, `intel`/`apple`/`universal`) — the format there is fixed at `.msi`/`.dmg` — so the workflow omits it and builds for the runner's native arch.
 - **macOS arch:** `macos-latest` is Apple Silicon, so the `.dmg` is arm64-only and won't run on Intel Macs. For a universal binary, uncomment the `rustup target add` step in `build.yml` and append `--targets universal` to the args (roughly doubles build time).
 - **Retention:** artifacts are kept 7 days (set in `build.yml`), and the app also caches them in `./builds`. Bump `retention-days` if you want longer.
-- **Concurrency:** GitHub Free allows 20 concurrent jobs; the app caps its own in-flight builds via `MAX_ACTIVE` (default 8).
+- **Concurrency:** GitHub Free allows 20 concurrent jobs. The app caps its own in-flight builds via `MAX_ACTIVE` (default 4). Each build holds its artifact zip in memory while unpacking, so raise it only if the host has the RAM.
+- **API budget:** the app polls one endpoint per build every 15s and fetches the run itself only once the legs report finished. At `MAX_ACTIVE=4` that is roughly 1,000 requests/hour against GitHub's 5,000/hour limit. Dropping `POLL_INTERVAL` or raising concurrency sharply eats into that.
 - **First run** on a fresh Pake cache is slower (~10–15 min); later runs are ~5 min. This is GitHub's build time, not the app's.
 - **Open access:** anyone who can reach the web app can build an app of any URL. If you expose it beyond localhost, put an auth proxy (e.g. Traefik + forward-auth) in front.
 

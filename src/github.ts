@@ -4,9 +4,9 @@ export interface GitHubConfig {
   owner: string;
   repo: string;
   token: string;
-  workflowFile: string; // e.g. 'build.yml'
-  ref: string;          // e.g. 'main'
-  apiBase?: string;     // default https://api.github.com
+  workflowFile: string;
+  ref: string;
+  apiBase?: string;
 }
 
 export interface WorkflowRun {
@@ -17,116 +17,155 @@ export interface WorkflowRun {
   html_url: string;
   created_at: string;
 }
-export interface RunJob { name: string; status: string; conclusion: string | null; }
-export interface RunArtifact { id: number; name: string; expired: boolean; }
+export interface RunJob {
+  name: string;
+  status: string;
+  conclusion: string | null;
+}
+export interface RunArtifact {
+  id: number;
+  name: string;
+  expired: boolean;
+}
+
+/** A run created within this window of the dispatch still counts as ours. */
+const CLOCK_SKEW_MS = 60_000;
 
 /**
- * Thin wrapper over the GitHub Actions REST API. All auth is a Bearer token
- * (fine-grained PAT or GitHub App installation token). Nothing here builds
- * anything locally — GitHub's runners do the work.
+ * Calls the GitHub Actions REST API. Nothing is compiled here — this only
+ * starts runs on GitHub's runners and retrieves what they produced.
  */
 export class GitHub {
   private base: string;
-  constructor(private cfg: GitHubConfig) {
-    this.base = (cfg.apiBase ?? 'https://api.github.com').replace(/\/$/, '');
+
+  constructor(private config: GitHubConfig) {
+    this.base = (config.apiBase ?? 'https://api.github.com').replace(/\/$/, '');
   }
 
   private headers(extra: Record<string, string> = {}) {
     return {
-      Authorization: `Bearer ${this.cfg.token}`,
+      Authorization: `Bearer ${this.config.token}`,
       Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
       'User-Agent': 'pake-cloud-builder',
       ...extra,
     };
   }
-  private repoPath() {
-    return `${this.base}/repos/${this.cfg.owner}/${this.cfg.repo}`;
+
+  private repoPath(): string {
+    return `${this.base}/repos/${this.config.owner}/${this.config.repo}`;
   }
 
-  /** Trigger the workflow. Returns 204 with no run id — correlation happens in findRun(). */
+  private async getJson<T>(url: string, label: string): Promise<T> {
+    const response = await fetch(url, { headers: this.headers() });
+    if (!response.ok) throw await describeFailure(response, label);
+    return (await response.json()) as T;
+  }
+
+  /** Starts the workflow. GitHub answers 204 with no body, hence findRun(). */
   async dispatch(buildId: string, input: BuildInput): Promise<void> {
-    const url = `${this.repoPath()}/actions/workflows/${encodeURIComponent(this.cfg.workflowFile)}/dispatches`;
-    const inputs: Record<string, string> = {
-      url: input.url,
-      name: input.name,
-      icon: input.icon ?? '',
-      width: String(input.width),
-      height: String(input.height),
-      platforms: input.platforms.join(','),
-      build_id: buildId,
-    };
-    const res = await fetch(url, {
+    const url = `${this.repoPath()}/actions/workflows/${encodeURIComponent(this.config.workflowFile)}/dispatches`;
+    const response = await fetch(url, {
       method: 'POST',
       headers: this.headers({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ ref: this.cfg.ref, inputs }),
+      body: JSON.stringify({
+        ref: this.config.ref,
+        inputs: {
+          url: input.url,
+          name: input.name,
+          icon: input.icon ?? '',
+          width: String(input.width),
+          height: String(input.height),
+          platforms: input.platforms.join(','),
+          build_id: buildId,
+        },
+      }),
     });
-    if (res.status !== 204) {
-      throw new Error(`Dispatch failed (${res.status}): ${await safeText(res)}`);
-    }
+    if (response.status !== 204) throw await describeFailure(response, 'Dispatch');
   }
 
-  /** Find the run whose name is "build <buildId>" (set via run-name in the workflow). */
-  async findRun(buildId: string, sinceMs: number): Promise<WorkflowRun | null> {
-    const url = `${this.repoPath()}/actions/runs?event=workflow_dispatch&per_page=50`;
-    const res = await fetch(url, { headers: this.headers() });
-    if (!res.ok) throw new Error(`List runs failed (${res.status}): ${await safeText(res)}`);
-    const data = (await res.json()) as { workflow_runs: WorkflowRun[] };
-    const wanted = `build ${buildId}`;
-    const buffer = 60_000;
-    const matches = (data.workflow_runs ?? []).filter(
-      (r) => r.name === wanted && new Date(r.created_at).getTime() >= sinceMs - buffer,
+  /** Match the run by the build id the workflow echoes into its run-name. */
+  async findRun(buildId: string, dispatchedAt: number): Promise<WorkflowRun | null> {
+    const page = await this.getJson<{ workflow_runs: WorkflowRun[] }>(
+      `${this.repoPath()}/actions/runs?event=workflow_dispatch&per_page=50`,
+      'List runs',
     );
-    matches.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-    return matches[0] ?? null;
+    const expectedName = `build ${buildId}`;
+    return (
+      (page.workflow_runs ?? [])
+        .filter(
+          (run) =>
+            run.name === expectedName &&
+            new Date(run.created_at).getTime() >= dispatchedAt - CLOCK_SKEW_MS,
+        )
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0] ??
+      null
+    );
   }
 
   async getRun(runId: number): Promise<WorkflowRun> {
-    const res = await fetch(`${this.repoPath()}/actions/runs/${runId}`, { headers: this.headers() });
-    if (!res.ok) throw new Error(`Get run failed (${res.status}): ${await safeText(res)}`);
-    return (await res.json()) as WorkflowRun;
+    return this.getJson<WorkflowRun>(`${this.repoPath()}/actions/runs/${runId}`, 'Get run');
   }
 
   async listJobs(runId: number): Promise<RunJob[]> {
-    const res = await fetch(`${this.repoPath()}/actions/runs/${runId}/jobs?per_page=50`, {
-      headers: this.headers(),
-    });
-    if (!res.ok) throw new Error(`List jobs failed (${res.status}): ${await safeText(res)}`);
-    const data = (await res.json()) as { jobs: RunJob[] };
-    return data.jobs ?? [];
+    const page = await this.getJson<{ jobs: RunJob[] }>(
+      `${this.repoPath()}/actions/runs/${runId}/jobs?per_page=50`,
+      'List run jobs',
+    );
+    return page.jobs ?? [];
   }
 
   async listArtifacts(runId: number): Promise<RunArtifact[]> {
-    const res = await fetch(`${this.repoPath()}/actions/runs/${runId}/artifacts?per_page=50`, {
-      headers: this.headers(),
-    });
-    if (!res.ok) throw new Error(`List artifacts failed (${res.status}): ${await safeText(res)}`);
-    const data = (await res.json()) as { artifacts: RunArtifact[] };
-    return data.artifacts ?? [];
+    const page = await this.getJson<{ artifacts: RunArtifact[] }>(
+      `${this.repoPath()}/actions/runs/${runId}/artifacts?per_page=50`,
+      'List artifacts',
+    );
+    return page.artifacts ?? [];
   }
 
   /**
-   * Download an artifact as a zip. GitHub returns a 302 to a signed blob URL;
-   * we follow it manually so the Bearer token is never sent to blob storage.
+   * Artifacts come back as a zip behind a 302 to blob storage. The redirect is
+   * followed by hand so the Authorization header is never sent off-origin.
    */
   async downloadArtifact(artifactId: number): Promise<Uint8Array> {
-    const url = `${this.repoPath()}/actions/artifacts/${artifactId}/zip`;
-    const first = await fetch(url, { headers: this.headers(), redirect: 'manual' });
-    let res = first;
-    if ([301, 302, 303, 307, 308].includes(first.status)) {
-      const loc = first.headers.get('location');
-      if (!loc) throw new Error('Artifact redirect missing Location header');
-      res = await fetch(loc); // signed URL — no auth header
+    const initial = await fetch(`${this.repoPath()}/actions/artifacts/${artifactId}/zip`, {
+      headers: this.headers(),
+      redirect: 'manual',
+    });
+
+    let download = initial;
+    if ([301, 302, 303, 307, 308].includes(initial.status)) {
+      const signedUrl = initial.headers.get('location');
+      if (!signedUrl) throw new Error('Artifact download redirect had no Location header.');
+      download = await fetch(signedUrl);
     }
-    if (!res.ok) throw new Error(`Download artifact failed (${res.status})`);
-    return new Uint8Array(await res.arrayBuffer());
+    if (!download.ok) throw await describeFailure(download, 'Download artifact');
+    return new Uint8Array(await download.arrayBuffer());
   }
 }
 
-async function safeText(res: Response): Promise<string> {
-  try {
-    return (await res.text()).slice(0, 500);
-  } catch {
-    return '<no body>';
+/** Turn an HTTP failure into something a user can act on, not just a status code. */
+async function describeFailure(response: Response, label: string): Promise<Error> {
+  const remaining = response.headers.get('x-ratelimit-remaining');
+  if ((response.status === 403 || response.status === 429) && remaining === '0') {
+    const resetAt = Number(response.headers.get('x-ratelimit-reset') ?? 0) * 1000;
+    const minutes = Math.max(1, Math.ceil((resetAt - Date.now()) / 60_000));
+    return new Error(`GitHub API rate limit reached. It resets in about ${minutes} min.`);
   }
+  if (response.status === 401) {
+    return new Error(`${label} rejected the token (401). Check GITHUB_TOKEN.`);
+  }
+  if (response.status === 404) {
+    return new Error(
+      `${label} returned 404. GitHub reports 404 for repositories a token cannot see, so verify GITHUB_OWNER, GITHUB_REPO and the token's repository access.`,
+    );
+  }
+
+  let detail = '';
+  try {
+    detail = (await response.text()).slice(0, 300);
+  } catch {
+    detail = '<no body>';
+  }
+  return new Error(`${label} failed (${response.status}): ${detail}`);
 }

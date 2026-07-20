@@ -1,30 +1,104 @@
-import { mkdir, writeFile, stat } from 'node:fs/promises';
+import { mkdir, writeFile, stat, rm, readdir } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
 import path from 'node:path';
 import { unzipSync } from 'fflate';
 import { nanoid } from 'nanoid';
-import { GitHub } from './github';
-import type { BuildInput, Job } from './types';
+import { GitHub, type RunJob } from './github';
+import { JobDatabase } from './db';
+import type { BuildInput, Job, JobStatus } from './types';
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const OSES = ['linux', 'windows', 'macos'] as const;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const PLATFORM_SUFFIXES = ['linux', 'windows', 'macos'] as const;
+const MATRIX_LEG_NAME = /\((linux|windows|macos)\)/;
+
+// One list-jobs call per tick keeps a full build well inside GitHub's 5,000
+// req/hour budget even at max concurrency; the run itself is only fetched once
+// the legs report completion.
+const DEFAULT_POLL_INTERVAL_MS = 15_000;
+// Catches runs cancelled before any matrix leg was created, which leaves
+// list-jobs permanently empty.
+const RUN_RECHECK_EVERY = 10;
+const RUN_TIMEOUT_MS = 40 * 60 * 1000;
+const RUN_APPEAR_ATTEMPTS = 30;
+
+const UNFINISHED: JobStatus[] = ['queued', 'dispatching', 'locating', 'running', 'collecting'];
+
+export interface JobStoreOptions {
+  maxActive: number;
+  retentionDays: number;
+  /** Lower it and GitHub's rate limit arrives sooner; raise it for slower status updates. */
+  pollIntervalMs?: number;
+}
 
 /**
- * Owns the lifecycle of every build: create → dispatch → locate run → poll →
- * collect artifacts → extract to disk. GitHub does the compilation; this just
- * drives it and serves the results.
+ * Owns a build from submission to downloadable installer: dispatch to GitHub,
+ * follow the run, mirror its artifacts to local disk. Every transition is
+ * written through to SQLite so a redeploy neither loses history nor abandons a
+ * run that is still executing on GitHub.
  */
 export class JobStore {
   private jobs = new Map<string, Job>();
-  private queue: string[] = [];
+  private waiting: string[] = [];
   private active = 0;
+  // ReturnType<> rather than NodeJS.Timeout so this typechecks without @types/node.
+  private sweepTimer?: ReturnType<typeof setInterval>;
+  private pollIntervalMs: number;
 
   constructor(
     private gh: GitHub,
     private buildDir: string,
-    private maxActive = 8,
-  ) {}
+    private db: JobDatabase,
+    private options: JobStoreOptions,
+  ) {
+    this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  }
 
-  create(input: BuildInput): Job {
+  // ---- lifecycle ----------------------------------------------------------
+
+  /** Reload history, re-attach to runs interrupted by a restart, start the sweeper. */
+  async start(): Promise<void> {
+    for (const job of this.db.loadAll()) this.jobs.set(job.id, job);
+
+    for (const job of this.jobs.values()) {
+      if (!UNFINISHED.includes(job.status)) continue;
+
+      if (job.status === 'queued') {
+        // Never dispatched, so re-running it cannot double-build.
+        this.waiting.push(job.id);
+        continue;
+      }
+      // Dispatch may or may not have landed. Re-attaching by build id is safe
+      // either way: the run is found and followed, or it never existed and the
+      // job is marked failed. Neither path dispatches a second build.
+      job.log.push('\u21ba Reconnecting after a restart\u2026');
+      this.persist(job);
+      void this.execute(job, { alreadyDispatched: true });
+    }
+
+    await this.sweepQuietly();
+    this.sweepTimer = setInterval(() => void this.sweepQuietly(), 60 * 60 * 1000);
+    this.sweepTimer.unref?.();
+    this.drainQueue();
+  }
+
+  stop(): void {
+    if (this.sweepTimer) clearInterval(this.sweepTimer);
+  }
+
+  // ---- queries ------------------------------------------------------------
+
+  get(id: string): Job | undefined {
+    return this.jobs.get(id);
+  }
+
+  list(): Job[] {
+    return [...this.jobs.values()].sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  // ---- submission ---------------------------------------------------------
+
+  submit(input: BuildInput): Job {
     const job: Job = {
       id: nanoid(12),
       buildId: nanoid(16),
@@ -36,146 +110,242 @@ export class JobStore {
       createdAt: Date.now(),
     };
     this.jobs.set(job.id, job);
-    this.queue.push(job.id);
-    this.pump();
+    this.persist(job);
+    this.waiting.push(job.id);
+    this.drainQueue();
     return job;
   }
 
-  get(id: string) {
-    return this.jobs.get(id);
-  }
-  list() {
-    return [...this.jobs.values()].sort((a, b) => b.createdAt - a.createdAt);
-  }
-
-  private pump() {
-    while (this.active < this.maxActive && this.queue.length) {
-      const id = this.queue.shift()!;
+  private drainQueue(): void {
+    while (this.active < this.options.maxActive && this.waiting.length) {
+      const id = this.waiting.shift()!;
       const job = this.jobs.get(id);
-      if (job) void this.run(job);
+      if (job) void this.execute(job, { alreadyDispatched: false });
     }
   }
 
-  private jobDir(job: Job) {
-    return path.join(this.buildDir, job.id);
+  private persist(job: Job): void {
+    try {
+      this.db.save(job);
+    } catch (err) {
+      // A failed write costs history, not the build — keep going.
+      console.error(`[db] could not save job ${job.id}:`, err);
+    }
   }
 
-  private async run(job: Job) {
+  private jobDir(jobId: string): string {
+    return path.join(this.buildDir, jobId);
+  }
+
+  // ---- the build itself ---------------------------------------------------
+
+  private async execute(job: Job, opts: { alreadyDispatched: boolean }): Promise<void> {
     this.active++;
     try {
-      await this.orchestrate(job);
-    } catch (e) {
+      if (!opts.alreadyDispatched) {
+        job.status = 'dispatching';
+        job.log.push(`\u2192 Dispatching ${job.input.platforms.join(', ')}\u2026`);
+        this.persist(job);
+        await this.gh.dispatch(job.buildId, job.input);
+        job.log.push('\u2713 Dispatched. Locating the run\u2026');
+      }
+
+      const runId = job.runId ?? (await this.locateRun(job));
+      const conclusion = await this.followRun(job, runId);
+      await this.mirrorArtifacts(job, runId, conclusion);
+    } catch (err) {
       job.status = 'error';
-      job.error = e instanceof Error ? e.message : String(e);
+      job.error = err instanceof Error ? err.message : String(err);
       job.log.push(`\u2715 ${job.error}`);
     } finally {
       job.finishedAt = Date.now();
+      this.persist(job);
       this.active--;
-      this.pump();
+      this.drainQueue();
     }
   }
 
-  private async orchestrate(job: Job) {
-    const log = (m: string) => job.log.push(m);
-
-    // 1) Dispatch
-    job.status = 'dispatching';
-    const dispatchedAt = Date.now();
-    log(`\u2192 Dispatching workflow for ${job.input.platforms.join(', ')} \u2026`);
-    await this.gh.dispatch(job.buildId, job.input);
-    log('\u2713 Dispatched. Locating the workflow run\u2026');
-
-    // 2) Locate the run (it can take a few seconds to register)
+  /** Dispatch returns no run id, so match the run by the build id in its name. */
+  private async locateRun(job: Job): Promise<number> {
     job.status = 'locating';
-    let runId: number | undefined;
-    for (let i = 0; i < 30 && runId === undefined; i++) {
-      await sleep(i === 0 ? 3000 : 4000);
-      const run = await this.gh.findRun(job.buildId, dispatchedAt);
+    this.persist(job);
+    const searchFrom = job.createdAt;
+
+    for (let attempt = 0; attempt < RUN_APPEAR_ATTEMPTS; attempt++) {
+      await sleep(Math.min(attempt === 0 ? 3000 : 4000, this.pollIntervalMs));
+      const run = await this.gh.findRun(job.buildId, searchFrom);
       if (run) {
-        runId = run.id;
         job.runId = run.id;
         job.runUrl = run.html_url;
-        log(`\u2713 Run found \u2192 ${run.html_url}`);
+        job.log.push(`\u2713 Run found \u2192 ${run.html_url}`);
+        this.persist(job);
+        return run.id;
       }
     }
-    if (runId === undefined) {
-      throw new Error('Timed out waiting for the workflow run to appear (check the token scopes and that build.yml is on the default branch).');
-    }
+    throw new Error(
+      'No workflow run appeared. Check that build.yml is on the default branch and the token grants Actions write.',
+    );
+  }
 
-    // 3) Poll until complete, refreshing per-platform leg status as we go
+  private async followRun(job: Job, runId: number): Promise<string> {
     job.status = 'running';
-    let conclusion: string | null = null;
-    const deadline = Date.now() + 40 * 60 * 1000;
-    while (Date.now() < deadline) {
-      await sleep(6000);
-      const run = await this.gh.getRun(runId);
-      job.legs = await this.legStatuses(runId);
-      if (run.status === 'completed') {
-        conclusion = run.conclusion;
-        break;
+    this.persist(job);
+    const deadline = Date.now() + RUN_TIMEOUT_MS;
+
+    for (let tick = 0; Date.now() < deadline; tick++) {
+      await sleep(this.pollIntervalMs);
+      const runJobs = await this.gh.listJobs(runId);
+      job.legs = runJobs
+        .filter((leg) => MATRIX_LEG_NAME.test(leg.name))
+        .map((leg) => ({
+          os: platformOf(leg),
+          status: leg.status,
+          conclusion: leg.conclusion,
+        }));
+      this.persist(job);
+
+      const allLegsFinished =
+        runJobs.length > 0 && runJobs.every((leg) => leg.status === 'completed');
+      if (allLegsFinished || tick % RUN_RECHECK_EVERY === RUN_RECHECK_EVERY - 1) {
+        const run = await this.gh.getRun(runId);
+        if (run.status === 'completed') {
+          job.log.push(`\u2713 Run completed: ${run.conclusion ?? 'unknown'}`);
+          return run.conclusion ?? 'unknown';
+        }
       }
     }
-    if (conclusion === null) throw new Error('Timed out waiting for the run to finish.');
-    log(`\u2713 Run completed: ${conclusion}`);
+    throw new Error('Gave up waiting for the run to finish after 40 minutes.');
+  }
 
-    // 4) Collect artifacts (partial success is fine — some platforms may fail)
+  /**
+   * Copy each artifact zip out of GitHub and unpack it under the job directory,
+   * so downloads keep working past GitHub's retention window.
+   */
+  private async mirrorArtifacts(job: Job, runId: number, conclusion: string): Promise<void> {
     job.status = 'collecting';
+    this.persist(job);
+
     const artifacts = await this.gh.listArtifacts(runId);
-    if (!artifacts.length) {
-      throw new Error(`Run concluded "${conclusion}" but produced no artifacts.`);
+    const usable = artifacts.filter((artifact) => !artifact.expired);
+    if (!usable.length) {
+      throw new Error(`Run concluded "${conclusion}" without producing artifacts.`);
     }
-    for (const art of artifacts) {
-      if (art.expired) continue;
-      const os = osFromArtifact(art.name);
-      log(`\u2193 Downloading ${art.name}\u2026`);
-      const zip = await this.gh.downloadArtifact(art.id);
-      const files = unzipSync(zip);
-      const outDir = path.join(this.jobDir(job), os);
-      await mkdir(outDir, { recursive: true });
-      for (const [entry, bytes] of Object.entries(files)) {
-        if (entry.endsWith('/') || bytes.length === 0) continue;
-        const dest = path.join(outDir, entry);
-        await mkdir(path.dirname(dest), { recursive: true });
-        await writeFile(dest, bytes);
-        job.artifacts.push({ os, file: `${os}/${entry}`, name: path.basename(entry), size: bytes.length });
+
+    for (const artifact of usable) {
+      const platform = platformOfArtifact(artifact.name);
+      job.log.push(`\u2193 ${artifact.name}`);
+      this.persist(job);
+
+      const unpacked = unzipSync(await this.gh.downloadArtifact(artifact.id));
+      const platformDir = path.join(this.jobDir(job.id), platform);
+      await mkdir(platformDir, { recursive: true });
+
+      for (const [entryPath, bytes] of Object.entries(unpacked)) {
+        if (entryPath.endsWith('/') || bytes.length === 0) continue;
+        const destination = path.join(platformDir, entryPath);
+        await mkdir(path.dirname(destination), { recursive: true });
+        await writeFile(destination, bytes);
+        job.artifacts.push({
+          os: platform,
+          file: `${platform}/${entryPath}`,
+          name: path.basename(entryPath),
+          size: bytes.length,
+        });
       }
     }
-    if (!job.artifacts.length) throw new Error('Artifacts downloaded but contained no files.');
 
-    // Downloads exist regardless of overall conclusion; warn on partial failure.
+    if (!job.artifacts.length) throw new Error('Artifact archives were empty.');
+
     job.status = 'done';
     if (conclusion !== 'success') {
-      job.warning = `Run concluded "${conclusion}" — some platforms may have failed. The downloads below are the ones that succeeded.`;
-      log(`\u26a0 ${job.warning}`);
+      job.warning = `The run ended as "${conclusion}". The installers below are the platforms that finished.`;
     }
-    log('\u2713 Done.');
+    job.log.push('\u2713 Done.');
   }
 
-  private async legStatuses(runId: number) {
-    const jobs = await this.gh.listJobs(runId);
-    return jobs
-      .filter((j) => j.name !== 'setup')
-      .map((j) => ({ os: osFromLeg(j.name), status: j.status, conclusion: j.conclusion }));
-  }
+  // ---- downloads ----------------------------------------------------------
 
-  /** Resolve a validated artifact path to an absolute file, or null. */
-  async fileFor(job: Job, rel: string): Promise<string | null> {
-    if (!job.artifacts.some((a) => a.file === rel)) return null; // whitelist guards traversal
-    const full = path.join(this.jobDir(job), rel);
+  /** Resolve an artifact path, refusing anything not recorded against this job. */
+  async artifactPath(job: Job, relativePath: string): Promise<string | null> {
+    if (!job.artifacts.some((artifact) => artifact.file === relativePath)) return null;
+    const absolute = path.join(this.jobDir(job.id), relativePath);
     try {
-      await stat(full);
-      return full;
+      await stat(absolute);
+      return absolute;
     } catch {
       return null;
     }
   }
+
+  // ---- retention ----------------------------------------------------------
+
+  /**
+   * Drop jobs past the retention window and delete any directory on disk with
+   * no surviving record, which is what stops the volume growing without bound.
+   */
+  async sweep(): Promise<void> {
+    const cutoff = Date.now() - this.options.retentionDays * 24 * 60 * 60 * 1000;
+
+    for (const id of this.db.expiredBefore(cutoff)) {
+      const job = this.jobs.get(id);
+      if (job && UNFINISHED.includes(job.status)) continue; // never cull a live build
+      this.jobs.delete(id);
+      this.db.remove(id);
+      await this.discard(this.jobDir(id));
+    }
+
+    let entries: Dirent[];
+    try {
+      entries = await readdir(this.buildDir, { withFileTypes: true });
+    } catch {
+      // The directory can be missing on a fresh volume; recreate and move on.
+      await mkdir(this.buildDir, { recursive: true }).catch(() => {});
+      return;
+    }
+
+    for (const entry of entries) {
+      // Only job directories are ours to delete. Skipping everything else
+      // leaves alone the lost+found that ext4 creates at a volume root, which
+      // is present whenever the volume is mounted at the build directory.
+      if (!entry.isDirectory() || entry.name === 'lost+found') continue;
+      if (this.jobs.has(entry.name)) continue;
+      await this.discard(path.join(this.buildDir, entry.name));
+    }
+  }
+
+  /** Never let a sweep failure reach the caller — at boot that would exit the process. */
+  private async sweepQuietly(): Promise<void> {
+    try {
+      await this.sweep();
+    } catch (err) {
+      console.error('[sweep] skipped:', err);
+    }
+  }
+
+  /**
+   * Remove one build directory, never the build root. On a container the root
+   * is a volume mount point, and rmdir on a mount point fails with EBUSY — a
+   * failure that used to abort startup and leave the container restarting.
+   */
+  private async discard(target: string): Promise<void> {
+    const resolved = path.resolve(target);
+    if (resolved === path.resolve(this.buildDir) || resolved === path.dirname(resolved)) {
+      console.error(`[sweep] refusing to remove ${resolved}: not a build directory`);
+      return;
+    }
+    try {
+      await rm(resolved, { recursive: true, force: true });
+    } catch (err) {
+      // A stuck directory costs disk, not uptime.
+      console.error(`[sweep] could not remove ${resolved}:`, err);
+    }
+  }
 }
 
-function osFromArtifact(name: string): string {
-  for (const p of OSES) if (name.endsWith(`-${p}`)) return p;
-  return 'unknown';
+function platformOf(leg: RunJob): string {
+  return leg.name.match(MATRIX_LEG_NAME)?.[1] ?? leg.name;
 }
-function osFromLeg(name: string): string {
-  const m = name.match(/\((linux|windows|macos)\)/);
-  return m ? m[1] : name;
+
+function platformOfArtifact(artifactName: string): string {
+  return PLATFORM_SUFFIXES.find((p) => artifactName.endsWith(`-${p}`)) ?? 'unknown';
 }

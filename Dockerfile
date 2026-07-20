@@ -1,5 +1,8 @@
-# Lightweight control-plane image — it dispatches builds to GitHub Actions and
-# serves the resulting installers. No Rust/Tauri toolchain here, so it stays small.
+# Control plane only — it dispatches builds to GitHub Actions and serves what
+# they produce, so no Rust/Tauri toolchain is needed and the image stays small.
+#
+# Node 22 is required: job history uses the built-in node:sqlite module
+# (available from 22.5, and without a flag from 22.22 onward).
 FROM node:22-slim
 
 WORKDIR /app
@@ -12,9 +15,12 @@ COPY tsconfig.json ./
 COPY src ./src
 COPY public ./public
 
+# DATA_DIR holds both the SQLite job history and the mirrored installers, so a
+# single volume mounted at /data preserves everything across redeploys.
 ENV PORT=3000 \
-    BUILD_DIR=/data/builds \
-    MAX_ACTIVE=8
+    DATA_DIR=/data \
+    MAX_ACTIVE=4 \
+    RETENTION_DAYS=7
 RUN mkdir -p /data/builds
 EXPOSE 3000
 
