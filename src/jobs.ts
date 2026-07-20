@@ -5,6 +5,7 @@ import { unzipSync } from 'fflate';
 import { nanoid } from 'nanoid';
 import { GitHub, type RunJob } from './github';
 import { JobDatabase } from './db';
+import { readSiteMetadata } from './metadata';
 import type { BuildInput, Job, JobStatus } from './types';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -167,6 +168,7 @@ export class JobStore {
     this.active++;
     try {
       if (!opts.alreadyDispatched) {
+        await this.fillGapsFromSite(job);
         job.status = 'dispatching';
         job.log.push(`\u2192 Dispatching ${job.input.platforms.join(', ')}\u2026`);
         this.persist(job);
@@ -186,6 +188,31 @@ export class JobStore {
       this.persist(job);
       this.active--;
       this.drainQueue();
+    }
+  }
+
+  /**
+   * Reads the target site for anything the submitter left blank. Without this a
+   * build dispatched with an empty description ships advertising Pake's tagline,
+   * and one with no icon ships Pake's logo — and the form having failed to fill
+   * itself in is exactly when that happens.
+   */
+  private async fillGapsFromSite(job: Job): Promise<void> {
+    if (job.input.description && job.input.icon) return;
+    try {
+      const site = await readSiteMetadata(job.input.url);
+      if (!job.input.description && site.description) {
+        job.input.description = site.description;
+        job.log.push('\u2139 Description read from the site.');
+      }
+      if (!job.input.icon && site.icon && site.iconUsable) {
+        job.input.icon = site.icon;
+        job.log.push('\u2139 Icon read from the site.');
+      }
+      this.persist(job);
+    } catch (err) {
+      // Best effort only — a build with no description still beats no build.
+      console.error(`[metadata] could not enrich ${job.id}:`, err);
     }
   }
 

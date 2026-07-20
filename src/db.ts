@@ -99,6 +99,7 @@ export class JobDatabase {
                         artifacts, log, created_at, finished_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET
+        description=excluded.description, icon=excluded.icon,
         status=excluded.status, run_id=excluded.run_id, run_url=excluded.run_url,
         error=excluded.error, warning=excluded.warning, legs=excluded.legs,
         artifacts=excluded.artifacts, log=excluded.log,
