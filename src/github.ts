@@ -73,6 +73,9 @@ export class GitHub {
         inputs: {
           url: input.url,
           name: input.name,
+          // Named app_description: an input called "description" collides with
+          // the description property every dispatch input already has.
+          app_description: input.description ?? '',
           icon: input.icon ?? '',
           width: String(input.width),
           height: String(input.height),
