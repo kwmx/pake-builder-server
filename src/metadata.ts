@@ -1,4 +1,7 @@
 const FETCH_TIMEOUT_MS = 8000;
+// CDNs in front of most icons reject unknown agents with a 403.
+const BROWSER_UA =
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 const MAX_HTML_BYTES = 512 * 1024;
 
 export interface SiteMetadata {
@@ -7,6 +10,9 @@ export interface SiteMetadata {
   title?: string;
   description?: string;
   icon?: string;
+  /** False when the icon exists but Pake cannot use it (SVG, an error page, ...). */
+  iconUsable?: boolean;
+  iconNote?: string;
   siteName?: string;
   themeColor?: string;
 }
@@ -114,6 +120,34 @@ export function cleanAppName(raw: string, fallbackHost: string): string {
 }
 
 /**
+ * Pake accepts PNG, ICO and ICNS only. Checking the bytes here means a bad icon
+ * shows up in the form rather than as a Pake-branded app twenty minutes later —
+ * the failure mode is silent otherwise, because Pake just uses its own logo.
+ */
+async function inspectIcon(iconUrl: string, referer: string): Promise<{ usable: boolean; note?: string }> {
+  try {
+    const response = await fetch(iconUrl, {
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      headers: { 'User-Agent': BROWSER_UA, Accept: 'image/*,*/*', Referer: referer },
+    });
+    if (!response.ok) return { usable: false, note: `The icon URL returned ${response.status}.` };
+
+    const head = new Uint8Array((await response.arrayBuffer()).slice(0, 8));
+    const starts = (...bytes: number[]) => bytes.every((b, i) => head[i] === b);
+    if (starts(0x89, 0x50, 0x4e, 0x47)) return { usable: true };
+    if (starts(0x00, 0x00, 0x01, 0x00)) return { usable: true };
+    if (String.fromCharCode(...head.slice(0, 4)) === 'icns') return { usable: true };
+
+    const kind = String.fromCharCode(...head.slice(0, 5)).trim().startsWith('<')
+      ? 'an SVG or an HTML error page'
+      : 'an unsupported image format';
+    return { usable: false, note: `The site's icon is ${kind}. Pake needs PNG, ICO or ICNS.` };
+  } catch {
+    return { usable: false, note: 'The icon could not be downloaded.' };
+  }
+}
+
+/**
  * Reads the target page and pulls out what the installer should carry: a name,
  * a description and an icon. Everything is best-effort — a site that blocks us
  * still produces a usable name derived from its hostname.
@@ -129,8 +163,7 @@ export async function readSiteMetadata(rawUrl: string): Promise<SiteMetadata> {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       headers: {
         // Some sites serve a stub to unknown agents; a browser UA gets the real head.
-        'User-Agent':
-          'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+        'User-Agent': BROWSER_UA,
         Accept: 'text/html,application/xhtml+xml',
       },
     });
@@ -169,6 +202,9 @@ export async function readSiteMetadata(rawUrl: string): Promise<SiteMetadata> {
   } catch {
     icon = undefined;
   }
+  const iconCheck = icon
+    ? await inspectIcon(icon, finalUrl.href)
+    : { usable: false, note: 'No icon found.' };
 
   return {
     url: finalUrl.href,
@@ -176,6 +212,8 @@ export async function readSiteMetadata(rawUrl: string): Promise<SiteMetadata> {
     title: rawTitle,
     description: description?.slice(0, 300),
     icon,
+    iconUsable: iconCheck.usable,
+    iconNote: iconCheck.note,
     siteName,
     themeColor,
   };

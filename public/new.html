@@ -18,6 +18,7 @@
   .dupe p { font-size:14px; color:var(--ink-2); margin:0 0 6px; }
   .dupe .when { font-family:var(--mono); font-size:12.5px; color:var(--ink-3); }
   .dupe .acts { display:flex; gap:9px; margin-top:14px; flex-wrap:wrap; }
+  .detected .who em { display:block; font-style:normal; font-size:12.5px; color:var(--run); margin-top:2px; }
 </style>
 </head>
 <body>
@@ -63,7 +64,7 @@
   <div class="field">
     <label for="icon">Icon URL</label>
     <input id="icon" type="url" inputmode="url" placeholder="https://example.com/icon.png" autocomplete="off" />
-    <span class="hint">Optional. Left empty, Pake uses the site's own favicon.</span>
+    <span class="hint">PNG, ICO or ICNS. Left empty, Pake falls back to the site's favicon — and to its own logo if that fails.</span>
   </div>
 
   <div class="field">
@@ -153,7 +154,9 @@ async function lookup() {
 
   fill('name', meta.name);
   fill('description', meta.description);
-  fill('icon', meta.icon);
+  // An icon Pake can't read would silently become Pake's own logo, so only
+  // pre-fill one that has been checked.
+  if (meta.iconUsable) fill('icon', meta.icon);
 
   const card = el('div', 'detected');
   if (meta.icon) {
@@ -168,6 +171,9 @@ async function lookup() {
     el('strong', null, meta.name),
     el('span', null, meta.description || meta.siteName || new URL(meta.url).host),
   );
+  if (!meta.iconUsable) {
+    who.append(el('em', null, (meta.iconNote || 'No usable icon found.') + ' Add an icon URL below, or the app ships with Pake\u2019s logo.'));
+  }
   card.append(who);
   detectedBox.replaceChildren(card);
 }
