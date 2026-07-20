@@ -172,7 +172,7 @@ export class JobStore {
 
       const runId = job.runId ?? (await this.locateRun(job));
       const conclusion = await this.followRun(job, runId);
-      await this.mirrorArtifacts(job, runId, conclusion);
+      await this.finishBuild(job, runId, conclusion);
     } catch (err) {
       job.status = 'error';
       job.error = err instanceof Error ? err.message : String(err);
@@ -211,6 +211,7 @@ export class JobStore {
     job.status = 'running';
     this.persist(job);
     const deadline = Date.now() + RUN_TIMEOUT_MS;
+    const collected = new Set<string>();
 
     for (let tick = 0; Date.now() < deadline; tick++) {
       if (this.removed.has(job.id)) throw new Error('Build was removed.');
@@ -225,6 +226,18 @@ export class JobStore {
           conclusion: leg.conclusion,
         }));
       this.persist(job);
+
+      // GitHub publishes each platform's artifact the moment that job uploads
+      // it, so a finished leg means its installers are already downloadable.
+      // Waiting for the whole matrix would leave a fast Linux build idle while
+      // macOS compiles for another ten minutes.
+      const justFinished = job.legs.filter(
+        (leg) => leg.status === 'completed' && !collected.has(leg.os),
+      );
+      if (justFinished.length) {
+        for (const leg of justFinished) collected.add(leg.os);
+        await this.collectArtifacts(job, runId);
+      }
 
       const allLegsFinished =
         runJobs.length > 0 && runJobs.every((leg) => leg.status === 'completed');
@@ -243,18 +256,27 @@ export class JobStore {
    * Copy each artifact zip out of GitHub and unpack it under the job directory,
    * so downloads keep working past GitHub's retention window.
    */
-  private async mirrorArtifacts(job: Job, runId: number, conclusion: string): Promise<void> {
-    job.status = 'collecting';
-    this.persist(job);
-
-    const artifacts = await this.gh.listArtifacts(runId);
-    const usable = artifacts.filter((artifact) => !artifact.expired);
-    if (!usable.length) {
-      throw new Error(`Run concluded "${conclusion}" without producing artifacts.`);
+  /**
+   * Mirrors any artifact not already on disk. Safe to call repeatedly: each
+   * platform is copied once, so it can run mid-run as legs finish and again at
+   * the end to sweep up whatever landed last.
+   */
+  private async collectArtifacts(job: Job, runId: number): Promise<void> {
+    let artifacts;
+    try {
+      artifacts = await this.gh.listArtifacts(runId);
+    } catch (err) {
+      // Mid-run this is not worth failing over; the final pass will retry.
+      console.error(`[artifacts] list failed for ${job.id}:`, err);
+      return;
     }
 
-    for (const artifact of usable) {
+    const alreadyHave = new Set(job.artifacts.map((artifact) => artifact.os));
+    for (const artifact of artifacts.filter((candidate) => !candidate.expired)) {
       const platform = platformOfArtifact(artifact.name);
+      if (alreadyHave.has(platform)) continue;
+      alreadyHave.add(platform);
+
       job.log.push(`\u2193 ${artifact.name}`);
       this.persist(job);
 
@@ -274,9 +296,20 @@ export class JobStore {
           size: bytes.length,
         });
       }
+      // Persist per artifact so the browser sees each download appear.
+      this.persist(job);
     }
+  }
 
-    if (!job.artifacts.length) throw new Error('Artifact archives were empty.');
+  /** Final sweep once the run is over, then decide how the build ended. */
+  private async finishBuild(job: Job, runId: number, conclusion: string): Promise<void> {
+    job.status = 'collecting';
+    this.persist(job);
+    await this.collectArtifacts(job, runId);
+
+    if (!job.artifacts.length) {
+      throw new Error(`Run concluded "${conclusion}" without producing artifacts.`);
+    }
 
     job.status = 'done';
     if (conclusion !== 'success') {
