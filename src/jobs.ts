@@ -10,7 +10,10 @@ import type { BuildInput, Job, JobStatus } from './types';
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const PLATFORM_SUFFIXES = ['linux', 'windows', 'macos'] as const;
-const MATRIX_LEG_NAME = /\((linux|windows|macos)\)/;
+// Matches the platform anywhere in a job name, so this keeps working whether
+// GitHub reports "build (linux)" or the default "build (linux, ubuntu-latest)".
+// The setup job contains no platform token and is excluded by the same test.
+const MATRIX_LEG_NAME = /\b(linux|windows|macos)\b/i;
 
 // One list-jobs call per tick keeps a full build well inside GitHub's 5,000
 // req/hour budget even at max concurrency; the run itself is only fetched once
@@ -44,6 +47,7 @@ export class JobStore {
   // ReturnType<> rather than NodeJS.Timeout so this typechecks without @types/node.
   private sweepTimer?: ReturnType<typeof setInterval>;
   private pollIntervalMs: number;
+  private stopped = false;
 
   constructor(
     private gh: GitHub,
@@ -83,6 +87,9 @@ export class JobStore {
   }
 
   stop(): void {
+    // Builds still in flight keep running until the process exits, but the
+    // database is about to close, so stop writing through to it.
+    this.stopped = true;
     if (this.sweepTimer) clearInterval(this.sweepTimer);
   }
 
@@ -97,6 +104,15 @@ export class JobStore {
   }
 
   // ---- submission ---------------------------------------------------------
+
+  /**
+   * The newest build for an identical spec, if one exists. Failed builds are
+   * ignored so a retry never gets blocked by its own earlier failure.
+   */
+  findExisting(input: BuildInput): Job | undefined {
+    const key = specKey(input);
+    return this.list().find((job) => job.status !== 'error' && specKey(job.input) === key);
+  }
 
   submit(input: BuildInput): Job {
     const job: Job = {
@@ -125,6 +141,7 @@ export class JobStore {
   }
 
   private persist(job: Job): void {
+    if (this.stopped) return;
     try {
       this.db.save(job);
     } catch (err) {
@@ -342,8 +359,20 @@ export class JobStore {
   }
 }
 
+/** Fingerprints a spec so an identical resubmission can be recognised. */
+function specKey(input: BuildInput): string {
+  return [
+    input.url.trim().replace(/\/+$/, '').toLowerCase(),
+    input.name.trim().toLowerCase(),
+    [...input.platforms].sort().join('+'),
+    (input.icon ?? '').trim().toLowerCase(),
+    input.width,
+    input.height,
+  ].join('|');
+}
+
 function platformOf(leg: RunJob): string {
-  return leg.name.match(MATRIX_LEG_NAME)?.[1] ?? leg.name;
+  return leg.name.match(MATRIX_LEG_NAME)?.[1].toLowerCase() ?? leg.name;
 }
 
 function platformOfArtifact(artifactName: string): string {

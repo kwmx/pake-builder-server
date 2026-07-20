@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>New app — pake</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/app.css" />
+<style>
+  /* Only this page needs the "already built" panel. */
+  .dupe {
+    border:1px solid var(--border-firm); border-left:3px solid var(--run);
+    border-radius:var(--r); background:var(--surface); padding:16px 18px; margin:0 0 22px;
+  }
+  .dupe h2 { font-size:15px; font-weight:600; margin:0 0 4px; }
+  .dupe p { font-size:14px; color:var(--ink-2); margin:0 0 6px; }
+  .dupe .when { font-family:var(--mono); font-size:12.5px; color:var(--ink-3); }
+  .dupe .acts { display:flex; gap:9px; margin-top:14px; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="inner">
+    <a class="brand" href="/">pake<span>.</span></a>
+    <nav class="nav">
+      <a href="/">Builds</a>
+      <a href="/new" aria-current="page">New app</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap narrow">
+  <div class="head">
+    <h1>New app</h1>
+    <p>Point pake at a website and it comes back as a native desktop app. Each platform compiles on its own runner.</p>
+  </div>
+
+  <div id="dupe"></div>
+  <p class="alert alert-bad" id="err" role="alert"></p>
+
+  <div class="field">
+    <label for="url">Website URL</label>
+    <input id="url" type="url" inputmode="url" placeholder="https://example.com" autocomplete="off" />
+    <span class="hint">The page the app opens on launch.</span>
+  </div>
+
+  <div class="field">
+    <label for="name">App name</label>
+    <input id="name" type="text" placeholder="My App" autocomplete="off" />
+    <span class="hint">Shown in the launcher and used in the installer filenames.</span>
+  </div>
+
+  <div class="field">
+    <label for="icon">Icon URL</label>
+    <input id="icon" type="url" inputmode="url" placeholder="https://example.com/icon.png" autocomplete="off" />
+    <span class="hint">Optional. PNG for Linux, ICO for Windows, ICNS for macOS.</span>
+  </div>
+
+  <div class="field">
+    <label for="width">Window size</label>
+    <div class="size-row">
+      <input id="width" type="number" value="1200" min="320" max="5000" aria-label="Window width in pixels" />
+      <span class="by">&times;</span>
+      <input id="height" type="number" value="780" min="240" max="5000" aria-label="Window height in pixels" />
+    </div>
+    <span class="hint">Size of the window when the app first opens.</span>
+  </div>
+
+  <fieldset class="checks">
+    <legend>Platforms</legend>
+    <label class="check">
+      <input type="checkbox" value="linux" checked />
+      <span class="os">Linux</span><span class="fmt">.deb .rpm .AppImage</span>
+    </label>
+    <label class="check">
+      <input type="checkbox" value="windows" checked />
+      <span class="os">Windows</span><span class="fmt">.msi</span>
+    </label>
+    <label class="check">
+      <input type="checkbox" value="macos" checked />
+      <span class="os">macOS</span><span class="fmt">.dmg</span>
+    </label>
+  </fieldset>
+
+  <button class="btn btn-primary" id="go">Create installers</button>
+</main>
+
+<script>
+const WORD = {
+  queued:'queued', dispatching:'dispatching', locating:'finding its run',
+  running:'still building', collecting:'collecting installers', done:'ready', error:'failed',
+};
+const errBox = document.getElementById('err');
+const dupeBox = document.getElementById('dupe');
+const go = document.getElementById('go');
+
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+};
+
+function ago(ms) {
+  const s = Math.round((Date.now() - ms) / 1000);
+  if (s < 60) return s + ' seconds ago';
+  if (s < 3600) return Math.floor(s / 60) + ' minutes ago';
+  if (s < 86400) return Math.floor(s / 3600) + ' hours ago';
+  return Math.floor(s / 86400) + ' days ago';
+}
+
+function spec() {
+  return {
+    url: document.getElementById('url').value.trim(),
+    name: document.getElementById('name').value.trim(),
+    icon: document.getElementById('icon').value.trim() || undefined,
+    width: Number(document.getElementById('width').value) || undefined,
+    height: Number(document.getElementById('height').value) || undefined,
+    platforms: [...document.querySelectorAll('.checks input:checked')].map((b) => b.value),
+  };
+}
+
+/* Rather than block a repeat build, show what already exists and let the
+   person decide. Building again is one click, it just isn't the default. */
+function showDuplicate(job) {
+  const box = el('div', 'dupe');
+  const built = job.status === 'done';
+  box.append(
+    el('h2', null, built ? 'You already built this' : 'This is building now'),
+    el('p', null, built
+      ? 'An identical spec finished earlier, so its installers are ready to download.'
+      : 'An identical spec was dispatched and is ' + (WORD[job.status] ?? job.status) + '.'),
+    el('p', 'when', job.input.name + ' \u00b7 ' + ago(job.createdAt)),
+  );
+
+  const acts = el('div', 'acts');
+  const view = el('a', 'btn btn-sm', built ? 'View installers' : 'View progress');
+  view.href = '/';
+  const again = el('button', 'btn btn-sm', 'Build it again');
+  again.type = 'button';
+  again.addEventListener('click', () => submit(true));
+  acts.append(view, again);
+  box.append(acts);
+
+  dupeBox.replaceChildren(box);
+  box.scrollIntoView({ block: 'nearest' });
+}
+
+async function submit(force) {
+  errBox.textContent = '';
+  if (!force) dupeBox.replaceChildren();
+  go.disabled = true;
+  try {
+    const res = await fetch('/api/builds', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(force ? { ...spec(), force: true } : spec()),
+    });
+    const body = await res.json();
+
+    if (res.status === 409 && body.duplicate) {
+      showDuplicate(body.job);
+      return;
+    }
+    if (!res.ok) {
+      errBox.textContent = body.error || 'The build could not be started.';
+      return;
+    }
+    window.location.href = '/';
+  } catch {
+    errBox.textContent = 'No response from the server. Check that it is still running.';
+  } finally {
+    go.disabled = false;
+  }
+}
+
+go.addEventListener('click', () => submit(false));
+</script>
+</body>
+</html>

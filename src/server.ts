@@ -38,12 +38,23 @@ const database = new JobDatabase(DB_FILE);
 const store = new JobStore(github, BUILD_DIR, database, {
   maxActive: Number(process.env.MAX_ACTIVE ?? 4),
   retentionDays: Number(process.env.RETENTION_DAYS ?? 7),
+  pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? 10_000),
 });
 await store.start();
 
 const app = Fastify({ logger: true, bodyLimit: 1_048_576 });
-const indexHtml = await readFile(path.join(projectRoot, 'public', 'index.html'), 'utf-8');
-app.get('/', async (_request, reply) => reply.type('text/html').send(indexHtml));
+// Three small static files, read once at boot rather than per request.
+const publicDir = path.join(projectRoot, 'public');
+const [buildsPage, newPage, styles] = await Promise.all([
+  readFile(path.join(publicDir, 'index.html'), 'utf-8'),
+  readFile(path.join(publicDir, 'new.html'), 'utf-8'),
+  readFile(path.join(publicDir, 'app.css'), 'utf-8'),
+]);
+
+app.get('/', async (_request, reply) => reply.type('text/html').send(buildsPage));
+app.get('/new', async (_request, reply) => reply.type('text/html').send(newPage));
+app.get('/app.css', async (_request, reply) =>
+  reply.type('text/css').header('Cache-Control', 'public, max-age=300').send(styles));
 
 const APP_NAME = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,49}$/;
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
@@ -76,6 +87,15 @@ app.post('/api/builds', async (request, reply) => {
     width: clamp(Number(payload.width) || 1200, 320, 5000),
     height: clamp(Number(payload.height) || 780, 240, 5000),
   };
+  // An identical spec almost always means the person forgot they already built
+  // it. Surface that build instead of spending runner minutes on a duplicate;
+  // `force` is how the UI says "yes, build it again anyway".
+  if (payload.force !== true) {
+    const existing = store.findExisting(input);
+    if (existing) {
+      return reply.code(409).send({ duplicate: true, job: toClientJob(existing) });
+    }
+  }
   return reply.code(202).send({ id: store.submit(input).id });
 });
 
