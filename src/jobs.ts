@@ -170,7 +170,13 @@ export class JobStore {
       if (!opts.alreadyDispatched) {
         await this.fillGapsFromSite(job);
         job.status = 'dispatching';
-        job.log.push(`\u2192 Dispatching ${job.input.platforms.join(', ')}\u2026`);
+        // Spelled out because "the description was empty" is otherwise only
+        // discoverable from the workflow's own report, minutes later.
+        job.log.push(
+          `\u2192 Dispatching ${job.input.platforms.join(', ')} \u2014 description: ` +
+            `${job.input.description ? `${job.input.description.length} chars` : 'NONE'}, icon: ` +
+            `${job.input.icon ? job.input.icon : 'NONE'}`,
+        );
         this.persist(job);
         await this.gh.dispatch(job.buildId, job.input);
         job.log.push('\u2713 Dispatched. Locating the run\u2026');
@@ -209,9 +215,13 @@ export class JobStore {
         job.input.icon = site.icon;
         job.log.push('\u2139 Icon read from the site.');
       }
+      if (!job.input.description) {
+        job.log.push(`\u26a0 No description found on the site${site.fetchNote ? `: ${site.fetchNote}` : '.'}`);
+      }
       this.persist(job);
     } catch (err) {
-      // Best effort only — a build with no description still beats no build.
+      const reason = err instanceof Error ? err.message : String(err);
+      job.log.push(`\u26a0 Could not read the site for missing details: ${reason}`);
       console.error(`[metadata] could not enrich ${job.id}:`, err);
     }
   }
