@@ -321,6 +321,17 @@ export class JobStore {
 
       for (const [entryPath, bytes] of Object.entries(unpacked)) {
         if (entryPath.endsWith('/') || bytes.length === 0) continue;
+
+        // The workflow ships a report describing what it actually produced.
+        // Fold it into the build log rather than offering it as a download, so
+        // a wrong description or a duplicate launcher is visible immediately.
+        if (path.basename(entryPath) === 'build-report.txt') {
+          for (const line of new TextDecoder().decode(bytes).trim().split('\n')) {
+            if (line.trim()) job.log.push(`   ${platform}: ${line.trim()}`);
+          }
+          continue;
+        }
+
         const destination = path.join(platformDir, entryPath);
         await mkdir(path.dirname(destination), { recursive: true });
         await writeFile(destination, bytes);
