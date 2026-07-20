@@ -1,4 +1,4 @@
-import { readFile, mkdir } from 'node:fs/promises';
+import { readFile, mkdir, rm } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +31,12 @@ const gh = new GitHub({
   apiBase: process.env.GITHUB_API_BASE,
 });
 
+// Job records live in memory, so artifacts left on disk by a previous container
+// can never be reached again through the API. Clear them on boot, otherwise the
+// volume grows without bound on a long-running deployment.
+if ((process.env.PURGE_ON_START ?? 'true') !== 'false') {
+  await rm(BUILD_DIR, { recursive: true, force: true });
+}
 await mkdir(BUILD_DIR, { recursive: true });
 const store = new JobStore(gh, BUILD_DIR, Number(process.env.MAX_ACTIVE ?? 8));
 

@@ -1,19 +1,69 @@
+# Pake Cloud Builder — works both locally and as a Coolify "Docker Compose" resource.
+#
+# COOLIFY DEPLOY (see README for the click-path):
+#   Resource type : Docker Compose (Git-based)
+#   Base Directory: /server   <- if this file lives in a subfolder of your repo
+#   Env vars      : set GITHUB_OWNER / GITHUB_REPO / GITHUB_TOKEN in the UI
+#
+# The ${VAR} syntax below is deliberate: Coolify surfaces those as editable
+# fields in its Environment Variables tab. Hardcoded values would not appear.
+
 services:
-  pake-cloud-builder:
-    build: .
-    image: pake-cloud-builder:latest
-    ports:
-      - "${SERVER_PORT}:3000"
+  # Service name stays a single word: Coolify's magic vars can't combine
+  # underscores in the identifier with a port suffix.
+  pake:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
     environment:
-      # These come from the .env file next to this compose file (see .env.example)
-      GITHUB_OWNER: ${GITHUB_OWNER}
-      GITHUB_REPO: ${GITHUB_REPO}
-      GITHUB_TOKEN: ${GITHUB_TOKEN}
-      WORKFLOW_FILE: ${WORKFLOW_FILE:-build.yml}
-      GIT_REF: ${GIT_REF:-main}
-      PORT: "3000"
-      BUILD_DIR: /data/builds
-      MAX_ACTIVE: "8"
+      # Coolify generates the domain + Traefik route from this. Leave it
+      # valueless; override the domain in Coolify's UI if you want your own.
+      # Locally this is simply ignored.
+      - SERVICE_FQDN_PAKE_3000
+
+      # ---- required (set these in Coolify > Environment Variables) ----
+      - GITHUB_OWNER=${GITHUB_OWNER}
+      - GITHUB_REPO=${GITHUB_REPO}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+
+      # ---- optional, with sane defaults ----
+      - WORKFLOW_FILE=${WORKFLOW_FILE:-build.yml}
+      - GIT_REF=${GIT_REF:-main}
+      - MAX_ACTIVE=${MAX_ACTIVE:-8}
+      # Artifacts on disk are only reachable via in-memory job records, so
+      # anything left by a previous container is unreachable. Purge on boot to
+      # stop the volume growing without bound. Set false if you add persistence.
+      - PURGE_ON_START=${PURGE_ON_START:-true}
+      - PORT=3000
+      - BUILD_DIR=/data/builds
+
+    # Coolify's proxy (Traefik) routes to the container port; no host binding.
+    expose:
+      - "3000"
+
+    # LOCAL USE ONLY — uncomment to reach it at http://localhost:3000.
+    # Keep commented on Coolify so traffic goes through the proxy rather than
+    # binding the port on the host and bypassing it.
+    # ports:
+    #   - "3000:3000"
+
     volumes:
-      - ./builds:/data/builds   # downloaded installers persist here
+      - pake-builds:/data/builds
+
+    # node:22-slim has no curl/wget, so probe with Node's built-in fetch.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
     restart: unless-stopped
+
+volumes:
+  pake-builds:
