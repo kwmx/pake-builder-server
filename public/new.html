@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="/app.css" />
 <style>
-  /* Only this page needs the "already built" panel. */
+  /* Only this page shows the "already built" panel. */
   .dupe {
     border:1px solid var(--border-firm); border-left:3px solid var(--run);
     border-radius:var(--r); background:var(--surface); padding:16px 18px; margin:0 0 22px;
@@ -43,8 +43,10 @@
   <div class="field">
     <label for="url">Website URL</label>
     <input id="url" type="url" inputmode="url" placeholder="https://example.com" autocomplete="off" />
-    <span class="hint">The page the app opens on launch.</span>
+    <span class="hint">The page the app opens on launch. Leave the field to read its name, icon and description.</span>
   </div>
+
+  <div id="detected" aria-live="polite"></div>
 
   <div class="field">
     <label for="name">App name</label>
@@ -53,9 +55,15 @@
   </div>
 
   <div class="field">
+    <label for="description">Description</label>
+    <input id="description" type="text" placeholder="What the app is for" autocomplete="off" maxlength="300" />
+    <span class="hint">Shown in Linux software centres. Windows and macOS installers can't carry one.</span>
+  </div>
+
+  <div class="field">
     <label for="icon">Icon URL</label>
     <input id="icon" type="url" inputmode="url" placeholder="https://example.com/icon.png" autocomplete="off" />
-    <span class="hint">Optional. PNG for Linux, ICO for Windows, ICNS for macOS.</span>
+    <span class="hint">Optional. Left empty, Pake uses the site's own favicon.</span>
   </div>
 
   <div class="field">
@@ -94,6 +102,8 @@ const WORD = {
 };
 const errBox = document.getElementById('err');
 const dupeBox = document.getElementById('dupe');
+const detectedBox = document.getElementById('detected');
+const urlInput = document.getElementById('url');
 const go = document.getElementById('go');
 
 const el = (tag, cls, text) => {
@@ -103,6 +113,12 @@ const el = (tag, cls, text) => {
   return n;
 };
 
+// Anything typed by hand is never overwritten by a later lookup.
+const edited = new Set();
+for (const id of ['name', 'description', 'icon']) {
+  document.getElementById(id).addEventListener('input', () => edited.add(id));
+}
+
 function ago(ms) {
   const s = Math.round((Date.now() - ms) / 1000);
   if (s < 60) return s + ' seconds ago';
@@ -111,10 +127,59 @@ function ago(ms) {
   return Math.floor(s / 86400) + ' days ago';
 }
 
+function fill(id, value) {
+  if (!value || edited.has(id)) return;
+  document.getElementById(id).value = value;
+}
+
+let lastLookup = '';
+async function lookup() {
+  const url = urlInput.value.trim();
+  if (!url || url === lastLookup || !/^https?:\/\/.+\..+/i.test(url)) return;
+  lastLookup = url;
+
+  detectedBox.replaceChildren(el('p', 'detected spin', 'Reading the page…'));
+  let meta;
+  try {
+    const res = await fetch('/api/metadata?url=' + encodeURIComponent(url));
+    meta = await res.json();
+    if (!res.ok) throw new Error(meta.error);
+  } catch (e) {
+    detectedBox.replaceChildren(
+      el('p', 'detected spin', 'Could not read that page. Fill the fields in yourself.'),
+    );
+    return;
+  }
+
+  fill('name', meta.name);
+  fill('description', meta.description);
+  fill('icon', meta.icon);
+
+  const card = el('div', 'detected');
+  if (meta.icon) {
+    const img = el('img');
+    img.src = meta.icon;
+    img.alt = '';
+    img.addEventListener('error', () => img.remove());
+    card.append(img);
+  }
+  const who = el('div', 'who');
+  who.append(
+    el('strong', null, meta.name),
+    el('span', null, meta.description || meta.siteName || new URL(meta.url).host),
+  );
+  card.append(who);
+  detectedBox.replaceChildren(card);
+}
+
+urlInput.addEventListener('change', lookup);
+urlInput.addEventListener('blur', lookup);
+
 function spec() {
   return {
-    url: document.getElementById('url').value.trim(),
+    url: urlInput.value.trim(),
     name: document.getElementById('name').value.trim(),
+    description: document.getElementById('description').value.trim() || undefined,
     icon: document.getElementById('icon').value.trim() || undefined,
     width: Number(document.getElementById('width').value) || undefined,
     height: Number(document.getElementById('height').value) || undefined,

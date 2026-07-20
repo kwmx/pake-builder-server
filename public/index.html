@@ -35,6 +35,7 @@
       <label class="sr-only" for="q">Search builds by app name or website</label>
       <input id="q" type="search" placeholder="Search by app name or website" autocomplete="off" />
     </div>
+    <button class="btn" id="check" type="button" disabled>Check now</button>
     <div class="seg" role="group" aria-label="Filter by status">
       <button type="button" data-f="all" aria-pressed="true">All</button>
       <button type="button" data-f="active" aria-pressed="false">Building</button>
@@ -140,7 +141,36 @@ function makeCard(job) {
   const note = el('p', 'card-note');
   note.hidden = true;
 
-  root.append(top, meta, rows, log, note);
+  // Two-step delete rather than a browser confirm(): the button becomes its own
+  // confirmation and disarms itself, so nothing blocks the page.
+  const actions = el('div', 'card-actions');
+  const del = el('button', 'btn-quiet danger', 'Delete');
+  del.type = 'button';
+  del.setAttribute('aria-label', 'Delete build ' + job.input.name);
+  let armed = false;
+  let disarm;
+  const reset = () => {
+    armed = false;
+    del.textContent = 'Delete';
+    del.classList.remove('arming');
+  };
+  del.addEventListener('click', async () => {
+    if (!armed) {
+      armed = true;
+      del.textContent = 'Confirm delete';
+      del.classList.add('arming');
+      disarm = setTimeout(reset, 4000);
+      return;
+    }
+    clearTimeout(disarm);
+    del.disabled = true;
+    del.textContent = 'Deleting…';
+    await fetch('/api/builds/' + job.id, { method: 'DELETE' }).catch(() => {});
+    await refresh();
+  });
+  actions.append(del);
+
+  root.append(top, meta, rows, log, note, actions);
   return { root, logLines: 0, n: { name, pill, metaText, runLink, rowMap, pre, note } };
 }
 
@@ -315,6 +345,35 @@ async function refresh() {
   }
 }
 
+const checkBtn = document.getElementById('check');
+let pollTimer = null;
+
+const anyActive = () => jobs.some((j) => !TERMINAL.includes(j.status));
+
+/* Poll quickly while something is building, then back right off. Nothing
+   changes on its own once every build has finished. */
+function schedule() {
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = setTimeout(tick, anyActive() ? 5000 : 60000);
+}
+async function tick() {
+  await refresh();
+  checkBtn.disabled = !anyActive();
+  schedule();
+}
+
+checkBtn.addEventListener('click', async () => {
+  checkBtn.disabled = true;
+  const was = checkBtn.textContent;
+  checkBtn.textContent = 'Checking…';
+  // Wakes the server's GitHub poll too, so this is a real check, not a re-read.
+  await fetch('/api/check', { method: 'POST' }).catch(() => {});
+  await refresh();
+  checkBtn.textContent = was;
+  checkBtn.disabled = !anyActive();
+  schedule();
+});
+
 function setFilter(next) {
   filter = next;
   for (const b of segButtons) b.setAttribute('aria-pressed', String(b.dataset.f === next));
@@ -324,8 +383,7 @@ function setFilter(next) {
 qInput.addEventListener('input', render);
 for (const b of segButtons) b.addEventListener('click', () => setFilter(b.dataset.f));
 
-refresh();
-setInterval(refresh, 2500);
+tick();
 </script>
 </body>
 </html>

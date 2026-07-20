@@ -6,6 +6,7 @@ import Fastify from 'fastify';
 import { GitHub } from './github';
 import { JobDatabase } from './db';
 import { JobStore } from './jobs';
+import { readSiteMetadata } from './metadata';
 import { PLATFORMS, type BuildInput, type Job, type Platform } from './types';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -82,6 +83,7 @@ app.post('/api/builds', async (request, reply) => {
   const input: BuildInput = {
     url,
     name,
+    description: payload.description ? String(payload.description).trim().slice(0, 300) : undefined,
     platforms,
     icon: payload.icon ? String(payload.icon).trim() : undefined,
     width: clamp(Number(payload.width) || 1200, 320, 5000),
@@ -100,6 +102,29 @@ app.post('/api/builds', async (request, reply) => {
 });
 
 app.get('/api/builds', async () => ({ jobs: store.list().map(toClientJob) }));
+
+/**
+ * Reads name, description and icon off the target page so the New app form can
+ * fill itself in. Failures are not fatal — the form just stays empty.
+ */
+app.get('/api/metadata', async (request, reply) => {
+  const target = String((request.query as { url?: string }).url ?? '').trim();
+  if (!target) return reply.code(400).send({ error: 'Add a URL to inspect.' });
+  try {
+    return await readSiteMetadata(target);
+  } catch (err) {
+    return reply.code(400).send({ error: err instanceof Error ? err.message : 'Could not read that page.' });
+  }
+});
+
+/** Wakes every in-flight poll so the browser's "Check now" is not just a re-read. */
+app.post('/api/check', async () => ({ checking: store.checkNow() }));
+
+app.delete('/api/builds/:id', async (request, reply) => {
+  const removed = await store.remove((request.params as { id: string }).id);
+  if (!removed) return reply.code(404).send({ error: 'No build with that id.' });
+  return reply.code(204).send();
+});
 
 app.get('/api/builds/:id', async (request, reply) => {
   const job = store.get((request.params as { id: string }).id);

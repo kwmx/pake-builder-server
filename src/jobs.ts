@@ -48,6 +48,9 @@ export class JobStore {
   private sweepTimer?: ReturnType<typeof setInterval>;
   private pollIntervalMs: number;
   private stopped = false;
+  private removed = new Set<string>();
+  /** jobId -> resolve fn, so a poll can be woken before its interval elapses. */
+  private waiters = new Map<string, () => void>();
 
   constructor(
     private gh: GitHub,
@@ -141,7 +144,7 @@ export class JobStore {
   }
 
   private persist(job: Job): void {
-    if (this.stopped) return;
+    if (this.stopped || this.removed.has(job.id)) return;
     try {
       this.db.save(job);
     } catch (err) {
@@ -210,7 +213,9 @@ export class JobStore {
     const deadline = Date.now() + RUN_TIMEOUT_MS;
 
     for (let tick = 0; Date.now() < deadline; tick++) {
-      await sleep(this.pollIntervalMs);
+      if (this.removed.has(job.id)) throw new Error('Build was removed.');
+      await this.waitForNextPoll(job.id);
+      if (this.removed.has(job.id)) throw new Error('Build was removed.');
       const runJobs = await this.gh.listJobs(runId);
       job.legs = runJobs
         .filter((leg) => MATRIX_LEG_NAME.test(leg.name))
@@ -278,6 +283,42 @@ export class JobStore {
       job.warning = `The run ended as "${conclusion}". The installers below are the platforms that finished.`;
     }
     job.log.push('\u2713 Done.');
+  }
+
+  // ---- manual control -----------------------------------------------------
+
+  /**
+   * Resolves the current wait for every in-flight build so a person pressing
+   * "Check now" sees GitHub's latest state instead of waiting out the interval.
+   * Returns how many builds were nudged.
+   */
+  checkNow(): number {
+    const pending = [...this.waiters.values()];
+    for (const wake of pending) wake();
+    return pending.length;
+  }
+
+  /** Forget a build and delete its installers. Returns false if it never existed. */
+  async remove(id: string): Promise<boolean> {
+    if (!this.jobs.has(id)) return false;
+    this.removed.add(id);
+    this.jobs.delete(id);
+    this.db.remove(id);
+    this.waiters.get(id)?.(); // let an in-flight poll notice and unwind
+    await this.discard(this.jobDir(id));
+    return true;
+  }
+
+  private waitForNextPoll(jobId: string): Promise<void> {
+    return new Promise((resolve) => {
+      const finish = () => {
+        clearTimeout(timer);
+        if (this.waiters.get(jobId) === finish) this.waiters.delete(jobId);
+        resolve();
+      };
+      const timer = setTimeout(finish, this.pollIntervalMs);
+      this.waiters.set(jobId, finish);
+    });
   }
 
   // ---- downloads ----------------------------------------------------------
@@ -364,6 +405,7 @@ function specKey(input: BuildInput): string {
   return [
     input.url.trim().replace(/\/+$/, '').toLowerCase(),
     input.name.trim().toLowerCase(),
+    (input.description ?? '').trim().toLowerCase(),
     [...input.platforms].sort().join('+'),
     (input.icon ?? '').trim().toLowerCase(),
     input.width,

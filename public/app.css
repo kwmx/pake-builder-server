@@ -220,3 +220,34 @@ details.log pre {
 @media (prefers-reduced-motion:reduce) {
   *, *::before, *::after { animation:none !important; transition:none !important; }
 }
+
+/* ---- card actions -------------------------------------------------------- */
+.card-actions { display:flex; gap:8px; align-items:center; margin-top:16px; }
+.btn-quiet {
+  font:inherit; font-size:13px; cursor:pointer; background:none; border:0;
+  color:var(--ink-3); padding:6px 9px; border-radius:6px; min-height:32px;
+}
+.btn-quiet:hover { background:var(--subtle); color:var(--ink); }
+.btn-quiet.danger { color:var(--fail); }
+.btn-quiet.danger:hover { background:var(--fail-soft); }
+.btn-quiet.arming { background:var(--fail-soft); color:var(--fail); font-weight:500; }
+
+.checking { font-size:13px; color:var(--ink-3); }
+
+/* ---- detected metadata preview (New app) --------------------------------- */
+.detected {
+  display:flex; gap:13px; align-items:center;
+  border:1px solid var(--border); border-radius:var(--r);
+  background:var(--subtle); padding:12px 14px; margin:0 0 20px;
+}
+.detected img {
+  width:40px; height:40px; border-radius:7px; object-fit:contain;
+  background:var(--surface); border:1px solid var(--border); flex:0 0 auto;
+}
+.detected .who { min-width:0; }
+.detected .who strong { display:block; font-size:14px; font-weight:600; }
+.detected .who span {
+  display:block; font-size:13px; color:var(--ink-2);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.detected .spin { font-size:13.5px; color:var(--ink-3); }

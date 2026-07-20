@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   build_id    TEXT NOT NULL,
   url         TEXT NOT NULL,
   name        TEXT NOT NULL,
+  description TEXT,
   icon        TEXT,
   width       INTEGER NOT NULL,
   height      INTEGER NOT NULL,
@@ -33,6 +34,7 @@ interface JobRow {
   build_id: string;
   url: string;
   name: string;
+  description: string | null;
   icon: string | null;
   width: number;
   height: number;
@@ -56,6 +58,7 @@ function rowToJob(row: JobRow): Job {
     input: {
       url: row.url,
       name: row.name,
+      description: row.description ?? undefined,
       icon: row.icon ?? undefined,
       width: row.width,
       height: row.height,
@@ -88,12 +91,13 @@ export class JobDatabase {
   constructor(file: string) {
     this.db = new DatabaseSync(file);
     this.db.exec(SCHEMA);
+    this.addMissingColumns();
 
     this.upsert = this.db.prepare(`
-      INSERT INTO jobs (id, build_id, url, name, icon, width, height, platforms,
-                        status, run_id, run_url, error, warning, legs, artifacts,
-                        log, created_at, finished_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      INSERT INTO jobs (id, build_id, url, name, description, icon, width, height,
+                        platforms, status, run_id, run_url, error, warning, legs,
+                        artifacts, log, created_at, finished_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET
         status=excluded.status, run_id=excluded.run_id, run_url=excluded.run_url,
         error=excluded.error, warning=excluded.warning, legs=excluded.legs,
@@ -107,12 +111,25 @@ export class JobDatabase {
     this.deleteById = this.db.prepare('DELETE FROM jobs WHERE id = ?');
   }
 
+  /** CREATE TABLE IF NOT EXISTS is a no-op on an existing table, so columns
+   *  added after a database was first created have to be applied by hand. */
+  private addMissingColumns(): void {
+    const present = new Set(
+      (this.db.prepare('PRAGMA table_info(jobs)').all() as unknown as { name: string }[])
+        .map((column) => column.name),
+    );
+    if (!present.has('description')) {
+      this.db.exec('ALTER TABLE jobs ADD COLUMN description TEXT');
+    }
+  }
+
   save(job: Job): void {
     this.upsert.run(
       job.id,
       job.buildId,
       job.input.url,
       job.input.name,
+      job.input.description ?? null,
       job.input.icon ?? null,
       job.input.width,
       job.input.height,
