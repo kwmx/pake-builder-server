@@ -19,6 +19,7 @@
   .dupe .when { font-family:var(--mono); font-size:12.5px; color:var(--ink-3); }
   .dupe .acts { display:flex; gap:9px; margin-top:14px; flex-wrap:wrap; }
   .detected .who em { display:block; font-style:normal; font-size:12.5px; color:var(--run); margin-top:2px; }
+  .detected .from { display:block; font-size:12px; color:var(--ink-3); margin-top:3px; }
 </style>
 </head>
 <body>
@@ -171,6 +172,12 @@ async function lookup() {
     el('strong', null, meta.name),
     el('span', null, meta.description || meta.siteName || new URL(meta.url).host),
   );
+  const FROM = {
+    manifest: "from the site\u2019s web app manifest",
+    page: 'from the page\u2019s meta tags',
+    hostname: 'guessed from the address \u2014 the page gave nothing back',
+  };
+  who.append(el('span', 'from', FROM[meta.source] || ''));
   if (!meta.iconUsable) {
     who.append(el('em', null, (meta.iconNote || 'No usable icon found.') + ' Add an icon URL below, or the app ships with Pake\u2019s logo.'));
   }

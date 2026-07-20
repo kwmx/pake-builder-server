@@ -1,8 +1,8 @@
 const FETCH_TIMEOUT_MS = 8000;
-// CDNs in front of most icons reject unknown agents with a 403.
+const MAX_HTML_BYTES = 512 * 1024;
+// CDNs in front of most pages and icons reject unknown agents with a 403.
 const BROWSER_UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
-const MAX_HTML_BYTES = 512 * 1024;
 
 export interface SiteMetadata {
   url: string;
@@ -15,6 +15,8 @@ export interface SiteMetadata {
   iconNote?: string;
   siteName?: string;
   themeColor?: string;
+  /** Which source won, so the UI can say where a value came from. */
+  source?: 'manifest' | 'page' | 'hostname';
 }
 
 /**
@@ -41,68 +43,79 @@ export function assertFetchable(raw: string): URL {
   return parsed;
 }
 
-/** First capture group of the first pattern that matches, trimmed. */
-function firstMatch(html: string, patterns: RegExp[]): string | undefined {
-  for (const pattern of patterns) {
-    const found = html.match(pattern);
-    if (found?.[1]) {
-      const text = decodeEntities(found[1].trim());
-      if (text) return text;
-    }
+/**
+ * Reads attributes out of a single tag. A regex per attribute cannot do this:
+ * a value like content="the world's best" ends at the apostrophe if the capture
+ * class excludes both quote characters, which silently truncates most
+ * descriptions. Quoting style is captured per attribute instead.
+ */
+function parseAttributes(tag: string): Record<string, string> {
+  const found: Record<string, string> = {};
+  const attribute = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'`=<>]+))/g;
+  let match: RegExpExecArray | null;
+  while ((match = attribute.exec(tag))) {
+    found[match[1].toLowerCase()] = decodeEntities(match[2] ?? match[3] ?? match[4] ?? '');
   }
-  return undefined;
+  return found;
+}
+
+function tagsOf(html: string, tagName: 'meta' | 'link'): Record<string, string>[] {
+  const pattern = new RegExp(`<${tagName}\\b[^>]*>`, 'gi');
+  return (html.match(pattern) ?? []).map(parseAttributes);
 }
 
 function decodeEntities(text: string): string {
   return text
-    .replace(/&(#\d+|#x[0-9a-f]+|amp|lt|gt|quot|apos|nbsp);/gi, (whole, code: string) => {
+    .replace(/&(#\d+|#x[0-9a-f]+|amp|lt|gt|quot|apos|nbsp|#39);/gi, (whole, code: string) => {
       const named: Record<string, string> = {
         amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ',
       };
       const key = code.toLowerCase();
       if (named[key]) return named[key];
-      if (key.startsWith('#x')) return String.fromCodePoint(parseInt(key.slice(2), 16));
-      if (key.startsWith('#')) return String.fromCodePoint(Number(key.slice(1)));
+      try {
+        if (key.startsWith('#x')) return String.fromCodePoint(parseInt(key.slice(2), 16));
+        if (key.startsWith('#')) return String.fromCodePoint(Number(key.slice(1)));
+      } catch {
+        return whole;
+      }
       return whole;
     })
-    .replace(/\s+/g, ' ');
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
-/** Meta tag matcher that tolerates attribute order (content before or after name). */
-function metaPatterns(key: string): RegExp[] {
-  const k = key.replace(/[:]/g, '[:]');
-  return [
-    new RegExp(`<meta[^>]+(?:property|name)=["']${k}["'][^>]*content=["']([^"']*)["']`, 'i'),
-    new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]*(?:property|name)=["']${k}["']`, 'i'),
-  ];
+const relTokens = (link: Record<string, string>) => (link.rel ?? '').toLowerCase().split(/\s+/);
+
+/** Largest declared dimension, used to rank icon candidates. */
+function sizeOf(value: string | undefined): number {
+  if (!value) return 0;
+  return Math.max(0, ...value.split(/\s+/).map((pair) => Number(pair.split(/x/i)[0]) || 0));
 }
+
+const GENERIC_SUBDOMAIN = new Set([
+  'www', 'web', 'app', 'apps', 'm', 'mobile', 'my', 'go', 'get', 'portal', 'dashboard',
+  'console', 'admin', 'secure', 'login', 'signin', 'account', 'accounts', 'mail', 'id',
+  'auth', 'beta', 'staging', 'new', 'home',
+]);
+const TLD_ISH = new Set([
+  'com', 'net', 'org', 'io', 'dev', 'app', 'co', 'uk', 'sa', 'ae', 'de', 'fr', 'jp', 'cn',
+  'au', 'us', 'ca', 'in', 'me', 'ai', 'xyz', 'info', 'biz', 'tv', 'sh', 'gg', 'so', 'to',
+  'cc', 'edu', 'gov', 'fun', 'site', 'online', 'store', 'tech', 'cloud', 'page', 'link',
+  'live', 'news', 'blog', 'eu', 'nl', 'es', 'it', 'se', 'no', 'fi', 'br', 'ru', 'kr',
+]);
 
 /**
- * Picks the best icon link. Matching whole rel tokens matters: a substring
- * match treats GitHub's <link rel="fluid-icon"> and Safari's "mask-icon" as
- * favicons, and both are the wrong shape for an app icon.
+ * The brand label of a hostname. Taking the first label would name an app after
+ * its subdomain — web.whatsapp.com becomes "Web", app.slack.com becomes "App" —
+ * so strip the suffix and any routing subdomain first.
  */
-function bestIconHref(html: string): string | undefined {
-  const links: { tokens: string[]; href: string; area: number }[] = [];
-  for (const tag of html.match(/<link\b[^>]*>/gi) ?? []) {
-    const rel = tag.match(/rel=["']([^"']+)["']/i)?.[1];
-    const href = tag.match(/href=["']([^"']+)["']/i)?.[1];
-    if (!rel || !href) continue;
-    const size = tag.match(/sizes=["'](\d+)x(\d+)["']/i);
-    links.push({
-      tokens: rel.toLowerCase().split(/\s+/),
-      href,
-      area: size ? Number(size[1]) * Number(size[2]) : 0,
-    });
-  }
+export function brandFromHost(hostname: string): string {
+  const labels = hostname.toLowerCase().split('.').filter(Boolean);
+  while (labels.length > 1 && TLD_ISH.has(labels[labels.length - 1])) labels.pop();
+  while (labels.length > 1 && GENERIC_SUBDOMAIN.has(labels[0])) labels.shift();
 
-  const largestOf = (has: (tokens: string[]) => boolean) =>
-    links.filter((l) => has(l.tokens)).sort((a, b) => b.area - a.area)[0]?.href;
-
-  return (
-    largestOf((t) => t.includes('apple-touch-icon') || t.includes('apple-touch-icon-precomposed')) ??
-    largestOf((t) => t.includes('icon'))
-  );
+  const label = (labels[labels.length - 1] ?? '').replace(/[^a-z0-9]/g, '');
+  return label ? label.charAt(0).toUpperCase() + label.slice(1) : '';
 }
 
 /** App names must survive Pake's own validation, so strip what it would reject. */
@@ -114,9 +127,14 @@ export function cleanAppName(raw: string, fallbackHost: string): string {
     .trim()
     .slice(0, 50);
   if (cleaned && /^[A-Za-z0-9]/.test(cleaned)) return cleaned;
+  return brandFromHost(fallbackHost) || 'App';
+}
 
-  const host = fallbackHost.replace(/^www\./, '').split('.')[0].replace(/[^A-Za-z0-9]/g, '');
-  return host ? host.charAt(0).toUpperCase() + host.slice(1) : 'App';
+interface WebAppManifest {
+  name?: string;
+  short_name?: string;
+  description?: string;
+  icons?: { src?: string; sizes?: string; type?: string; purpose?: string }[];
 }
 
 /**
@@ -148,9 +166,10 @@ async function inspectIcon(iconUrl: string, referer: string): Promise<{ usable: 
 }
 
 /**
- * Reads the target page and pulls out what the installer should carry: a name,
- * a description and an icon. Everything is best-effort — a site that blocks us
- * still produces a usable name derived from its hostname.
+ * Reads the target page for what the installer should carry. The web app
+ * manifest is preferred over meta tags: anything worth packaging as a desktop
+ * app is usually a PWA, and its manifest states the app's real name, purpose
+ * and icon set rather than whatever the current page happens to be titled.
  */
 export async function readSiteMetadata(rawUrl: string): Promise<SiteMetadata> {
   const target = assertFetchable(rawUrl);
@@ -162,9 +181,9 @@ export async function readSiteMetadata(rawUrl: string): Promise<SiteMetadata> {
       redirect: 'follow',
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       headers: {
-        // Some sites serve a stub to unknown agents; a browser UA gets the real head.
         'User-Agent': BROWSER_UA,
         Accept: 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en,*;q=0.5',
       },
     });
     if (response.ok) {
@@ -175,25 +194,63 @@ export async function readSiteMetadata(rawUrl: string): Promise<SiteMetadata> {
     // Unreachable or too slow — fall through to hostname-derived defaults.
   }
 
-  const rawTitle =
-    firstMatch(html, metaPatterns('og:title')) ??
-    firstMatch(html, metaPatterns('twitter:title')) ??
-    firstMatch(html, metaPatterns('application-name')) ??
-    firstMatch(html, [/<title[^>]*>([\s\S]*?)<\/title>/i]);
+  const metas = tagsOf(html, 'meta');
+  const links = tagsOf(html, 'link');
+  const metaValue = (key: string) =>
+    metas.find((tag) => (tag.name ?? tag.property ?? '').toLowerCase() === key)?.content || undefined;
 
+  let manifest: WebAppManifest | undefined;
+  const manifestHref = links.find((link) => relTokens(link).includes('manifest'))?.href;
+  if (manifestHref) {
+    try {
+      const manifestUrl = new URL(manifestHref, finalUrl);
+      const response = await fetch(manifestUrl, {
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        headers: { 'User-Agent': BROWSER_UA, Accept: 'application/manifest+json,application/json' },
+      });
+      if (response.ok) manifest = (await response.json()) as WebAppManifest;
+    } catch {
+      // A missing or malformed manifest just means the meta tags decide.
+    }
+  }
+
+  const pageTitle =
+    metaValue('application-name') ??
+    metaValue('og:site_name') ??
+    metaValue('og:title') ??
+    metaValue('twitter:title') ??
+    html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+
+  const rawName = manifest?.name || manifest?.short_name || pageTitle;
   const description =
-    firstMatch(html, metaPatterns('og:description')) ??
-    firstMatch(html, metaPatterns('twitter:description')) ??
-    firstMatch(html, metaPatterns('description'));
+    manifest?.description ??
+    metaValue('og:description') ??
+    metaValue('twitter:description') ??
+    metaValue('description');
 
-  const siteName = firstMatch(html, metaPatterns('og:site_name'));
-  const themeColor = firstMatch(html, metaPatterns('theme-color'));
+  // Manifest icons first: they are declared for exactly this purpose and are
+  // usually square PNGs at app resolution.
+  const manifestIcon = (manifest?.icons ?? [])
+    .filter((icon) => icon.src && !/maskable/i.test(icon.purpose ?? ''))
+    .sort((a, b) => sizeOf(b.sizes) - sizeOf(a.sizes))[0]?.src;
 
-  // Ordered by how likely each is to be a crisp, square, high-resolution mark.
+  const iconLinks = links
+    .filter((link) => {
+      const tokens = relTokens(link);
+      return link.href && (tokens.includes('apple-touch-icon') || tokens.includes('icon'));
+    })
+    .sort((a, b) => {
+      const appleFirst =
+        Number(relTokens(b).includes('apple-touch-icon')) -
+        Number(relTokens(a).includes('apple-touch-icon'));
+      return appleFirst || sizeOf(b.sizes) - sizeOf(a.sizes);
+    });
+
   const iconCandidate =
-    bestIconHref(html) ??
-    firstMatch(html, metaPatterns('og:image')) ??
-    firstMatch(html, metaPatterns('twitter:image')) ??
+    manifestIcon ??
+    iconLinks[0]?.href ??
+    metaValue('og:image') ??
+    metaValue('twitter:image') ??
     '/favicon.ico';
 
   let icon: string | undefined;
@@ -208,13 +265,14 @@ export async function readSiteMetadata(rawUrl: string): Promise<SiteMetadata> {
 
   return {
     url: finalUrl.href,
-    name: cleanAppName(rawTitle ?? siteName ?? '', finalUrl.hostname),
-    title: rawTitle,
+    name: cleanAppName(rawName ?? '', finalUrl.hostname),
+    title: pageTitle,
     description: description?.slice(0, 300),
     icon,
     iconUsable: iconCheck.usable,
     iconNote: iconCheck.note,
-    siteName,
-    themeColor,
+    siteName: metaValue('og:site_name'),
+    themeColor: metaValue('theme-color'),
+    source: manifest?.name || manifest?.short_name ? 'manifest' : rawName ? 'page' : 'hostname',
   };
 }
