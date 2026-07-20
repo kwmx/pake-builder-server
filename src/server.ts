@@ -111,7 +111,14 @@ app.get('/api/metadata', async (request, reply) => {
   const target = String((request.query as { url?: string }).url ?? '').trim();
   if (!target) return reply.code(400).send({ error: 'Add a URL to inspect.' });
   try {
-    return await readSiteMetadata(target);
+    const site = await readSiteMetadata(target);
+    // Logged because "the form came back empty" is otherwise indistinguishable
+    // from a block, a timeout and a page with no tags.
+    request.log.info(
+      { url: target, status: site.fetchStatus, source: site.source, note: site.fetchNote },
+      'metadata lookup',
+    );
+    return site;
   } catch (err) {
     return reply.code(400).send({ error: err instanceof Error ? err.message : 'Could not read that page.' });
   }
