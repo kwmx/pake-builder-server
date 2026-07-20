@@ -1,0 +1,18 @@
+{
+  "name": "pake-cloud-builder",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Containerised web app that builds Pake desktop apps for Linux, Windows and macOS via a public GitHub Actions builder repo — free.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "dev": "tsx watch src/server.ts"
+  },
+  "dependencies": {
+    "fastify": "^5.2.0",
+    "fflate": "^0.8.2",
+    "nanoid": "^5.0.9",
+    "tsx": "^4.19.2"
+  }
+}

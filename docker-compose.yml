@@ -1,0 +1,19 @@
+services:
+  pake-cloud-builder:
+    build: .
+    image: pake-cloud-builder:latest
+    ports:
+      - "${SERVER_PORT}:3000"
+    environment:
+      # These come from the .env file next to this compose file (see .env.example)
+      GITHUB_OWNER: ${GITHUB_OWNER}
+      GITHUB_REPO: ${GITHUB_REPO}
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      WORKFLOW_FILE: ${WORKFLOW_FILE:-build.yml}
+      GIT_REF: ${GIT_REF:-main}
+      PORT: "3000"
+      BUILD_DIR: /data/builds
+      MAX_ACTIVE: "8"
+    volumes:
+      - ./builds:/data/builds   # downloaded installers persist here
+    restart: unless-stopped

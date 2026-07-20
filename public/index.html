@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pake Cloud Builder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --teal:#00c3aa; --teal-d:#009e8a;
+    --bg:#f6f8f8; --card:#fff; --fg:#16201e; --muted:#5c6b68;
+    --line:#e3e9e8; --radius:14px; --mono:'JetBrains Mono',ui-monospace,monospace;
+    --ok:#1a9d6b; --err:#d5453b; --warn:#b8860b; --run:#0f6e56;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0e1413; --card:#151d1b; --fg:#e7efed; --muted:#93a29f; --line:#243230; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:'Cairo',system-ui,sans-serif; background:var(--bg); color:var(--fg); line-height:1.5; }
+  .wrap { max-width:880px; margin:0 auto; padding:32px 20px 80px; }
+  header { display:flex; align-items:center; gap:12px; margin-bottom:6px; }
+  .logo { font-family:var(--mono); font-weight:600; font-size:20px; color:var(--teal-d); }
+  .logo b { color:var(--fg); }
+  .cursor { display:inline-block; width:8px; background:var(--teal); animation:blink 1.1s step-end infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  .sub { color:var(--muted); font-size:14px; margin:0 0 22px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:22px; margin-bottom:22px; }
+  label.fl { display:block; font-size:13px; font-weight:600; margin:0 0 6px; }
+  .hint { font-weight:400; color:var(--muted); }
+  input[type=text],input[type=url],input[type=number] {
+    width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:10px;
+    background:var(--bg); color:var(--fg); font:inherit; font-size:14px;
+  }
+  input:focus { outline:2px solid color-mix(in srgb,var(--teal) 55%,transparent); border-color:var(--teal); }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .field { margin-bottom:16px; }
+  .plats { display:flex; gap:18px; flex-wrap:wrap; }
+  .plats label { display:flex; align-items:center; gap:8px; font-weight:500; cursor:pointer; }
+  .plats input { accent-color:var(--teal); width:16px; height:16px; }
+  button { background:var(--teal); color:#06231f; font:inherit; font-weight:700; font-size:15px;
+           border:0; border-radius:10px; padding:12px 22px; cursor:pointer; transition:background .15s; }
+  button:hover { background:var(--teal-d); }
+  button:disabled { opacity:.55; cursor:not-allowed; }
+  .jobs h2 { font-size:15px; margin:0 0 12px; }
+  .job { border:1px solid var(--line); border-radius:var(--radius); padding:14px 16px; margin-bottom:14px; background:var(--card); }
+  .job-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+  .job-name { font-weight:700; }
+  .job-url { color:var(--muted); font-size:12px; word-break:break-all; }
+  .status-badge { font-size:12px; font-weight:600; padding:3px 10px; border-radius:999px; white-space:nowrap; }
+  .s-queued,.s-dispatching,.s-locating { background:#e7ecec; color:#5c6b68; }
+  .s-running,.s-collecting { background:color-mix(in srgb,var(--teal) 20%,transparent); color:var(--teal-d); }
+  .s-done { background:color-mix(in srgb,var(--ok) 18%,transparent); color:var(--ok); }
+  .s-error { background:color-mix(in srgb,var(--err) 16%,transparent); color:var(--err); }
+  .legs { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0 0; }
+  .leg { font-size:12px; font-weight:600; padding:3px 10px; border-radius:999px; border:1px solid var(--line); display:flex; align-items:center; gap:6px; }
+  .dot { width:8px; height:8px; border-radius:50%; }
+  .d-queued { background:#b4b2a9; } .d-in_progress { background:var(--warn); animation:pulse 1s ease-in-out infinite; }
+  .d-completed { background:var(--ok); } .d-failed { background:var(--err); }
+  @keyframes pulse { 50% { opacity:.35; } }
+  .runlink { font-size:12px; color:var(--teal-d); text-decoration:none; font-weight:600; }
+  .runlink:hover { text-decoration:underline; }
+  pre.log { font-family:var(--mono); font-size:12px; background:#0c1211; color:#c9d6d3; border-radius:10px;
+            padding:12px; max-height:220px; overflow:auto; margin:12px 0 0; white-space:pre-wrap; word-break:break-word; }
+  .os-group { margin-top:12px; }
+  .os-title { font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin-bottom:6px; }
+  .dl { display:flex; gap:10px; flex-wrap:wrap; }
+  .dl a { text-decoration:none; font-size:13px; font-weight:600; color:var(--teal-d); border:1px solid var(--teal); border-radius:10px; padding:8px 14px; }
+  .dl a:hover { background:var(--teal); color:#06231f; }
+  .msg { font-size:13px; margin-top:10px; }
+  .msg.warn { color:var(--warn); } .msg.err { color:var(--err); }
+  .empty { color:var(--muted); font-size:14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header><span class="logo">pake<b>&gt;</b><span class="cursor">&nbsp;</span></span></header>
+  <p class="sub">Turn any URL into desktop apps for Linux, Windows &amp; macOS. Builds run on GitHub Actions — this app just orchestrates and hands you the installers.</p>
+
+  <div class="card">
+    <div class="field">
+      <label class="fl" for="url">Website URL</label>
+      <input id="url" type="url" placeholder="https://example.com" />
+    </div>
+    <div class="field">
+      <label class="fl" for="name">App name <span class="hint">(1&ndash;50 chars, letters/digits/space/-/_)</span></label>
+      <input id="name" type="text" placeholder="My App" />
+    </div>
+    <div class="field">
+      <label class="fl" for="icon">Icon URL <span class="hint">(optional &mdash; png/ico/icns)</span></label>
+      <input id="icon" type="url" placeholder="https://&hellip;/icon.png" />
+    </div>
+    <div class="row field">
+      <div><label class="fl" for="width">Width</label><input id="width" type="number" value="1200" min="320" max="5000" /></div>
+      <div><label class="fl" for="height">Height</label><input id="height" type="number" value="780" min="240" max="5000" /></div>
+    </div>
+    <div class="field">
+      <label class="fl">Platforms</label>
+      <div class="plats">
+        <label><input type="checkbox" value="linux" checked /> Linux <span class="hint">(.deb .rpm .AppImage)</span></label>
+        <label><input type="checkbox" value="windows" checked /> Windows <span class="hint">(.msi)</span></label>
+        <label><input type="checkbox" value="macos" checked /> macOS <span class="hint">(.dmg)</span></label>
+      </div>
+    </div>
+    <button id="build">Build apps</button>
+  </div>
+
+  <div class="jobs">
+    <h2>Builds</h2>
+    <div id="jobs"><p class="empty">No builds yet.</p></div>
+  </div>
+</div>
+
+<script>
+const jobsEl = document.getElementById('jobs');
+const tracked = new Map(); // id -> logCount
+
+async function submit() {
+  const btn = document.getElementById('build');
+  const platforms = [...document.querySelectorAll('.plats input:checked')].map((c) => c.value);
+  const payload = {
+    url: document.getElementById('url').value.trim(),
+    name: document.getElementById('name').value.trim(),
+    icon: document.getElementById('icon').value.trim() || undefined,
+    width: Number(document.getElementById('width').value) || undefined,
+    height: Number(document.getElementById('height').value) || undefined,
+    platforms,
+  };
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/builds', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'Build request failed'); return; }
+    tracked.set(data.id, 0);
+    await refresh();
+  } catch (e) { alert('Network error: ' + e.message); }
+  finally { btn.disabled = false; }
+}
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+const sizeKB = (n) => n >= 1048576 ? (n/1048576).toFixed(1)+' MB' : Math.max(1, Math.round(n/1024))+' KB';
+
+function legPill(leg) {
+  const cls = leg.conclusion === 'failure' ? 'd-failed'
+    : leg.status === 'completed' ? 'd-completed'
+    : leg.status === 'in_progress' ? 'd-in_progress' : 'd-queued';
+  return `<span class="leg"><span class="dot ${cls}"></span>${esc(leg.os)}</span>`;
+}
+
+function downloads(job) {
+  if (!job.artifacts || !job.artifacts.length) return '';
+  const byOs = {};
+  for (const a of job.artifacts) (byOs[a.os] ||= []).push(a);
+  return Object.entries(byOs).map(([os, files]) => `
+    <div class="os-group">
+      <div class="os-title">${esc(os)}</div>
+      <div class="dl">${files.map((f) =>
+        `<a href="/api/builds/${job.id}/file/${encodeURI(f.file)}">\u2193 ${esc(f.name)} <span class="hint">${sizeKB(f.size)}</span></a>`
+      ).join('')}</div>
+    </div>`).join('');
+}
+
+function render(list) {
+  if (!list.length) { jobsEl.innerHTML = '<p class="empty">No builds yet.</p>'; return; }
+  jobsEl.innerHTML = list.map((j) => {
+    const run = j.runUrl ? `<a class="runlink" href="${j.runUrl}" target="_blank" rel="noopener">view run &nearr;</a>` : '';
+    const legs = (j.legs && j.legs.length) ? `<div class="legs">${j.legs.map(legPill).join('')}</div>` : '';
+    const warn = j.warning ? `<div class="msg warn">${esc(j.warning)}</div>` : '';
+    const err = j.error ? `<div class="msg err">${esc(j.error)}</div>` : '';
+    return `<div class="job">
+      <div class="job-head">
+        <div>
+          <div class="job-name">${esc(j.input.name)} ${run}</div>
+          <div class="job-url">${esc(j.input.url)} \u00b7 ${esc(j.input.platforms.join(', '))}</div>
+        </div>
+        <span class="status-badge s-${j.status}">${j.status}</span>
+      </div>
+      ${legs}
+      <pre class="log" id="log-${j.id}"></pre>
+      ${downloads(j)}
+      ${warn}${err}
+    </div>`;
+  }).join('');
+}
+
+async function refresh() {
+  const res = await fetch('/api/builds');
+  const { jobs } = await res.json();
+  render(jobs);
+  await Promise.all(jobs.map(async (j) => {
+    const seen = tracked.get(j.id) ?? 0;
+    tracked.set(j.id, seen);
+    const r = await fetch(`/api/builds/${j.id}?after=${seen}`);
+    const d = await r.json();
+    const pre = document.getElementById(`log-${j.id}`);
+    if (pre) {
+      if (seen === 0) pre.textContent = '';
+      if (d.log && d.log.length) pre.textContent += d.log.join('\n') + '\n';
+      pre.scrollTop = pre.scrollHeight;
+      tracked.set(j.id, d.logCount);
+    }
+  }));
+}
+
+document.getElementById('build').addEventListener('click', submit);
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
