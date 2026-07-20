@@ -24,6 +24,10 @@ const DEFAULT_POLL_INTERVAL_MS = 15_000;
 const RUN_RECHECK_EVERY = 10;
 const RUN_TIMEOUT_MS = 40 * 60 * 1000;
 const RUN_APPEAR_ATTEMPTS = 30;
+// A run can be reported complete before its last artifact is listable, so the
+// final sweep waits for the platforms that succeeded rather than taking one look.
+const ARTIFACT_SETTLE_ATTEMPTS = 6;
+const ARTIFACT_SETTLE_MS = 5000;
 
 const UNFINISHED: JobStatus[] = ['queued', 'dispatching', 'locating', 'running', 'collecting'];
 
@@ -211,7 +215,7 @@ export class JobStore {
     job.status = 'running';
     this.persist(job);
     const deadline = Date.now() + RUN_TIMEOUT_MS;
-    const collected = new Set<string>();
+
 
     for (let tick = 0; Date.now() < deadline; tick++) {
       if (this.removed.has(job.id)) throw new Error('Build was removed.');
@@ -231,13 +235,17 @@ export class JobStore {
       // it, so a finished leg means its installers are already downloadable.
       // Waiting for the whole matrix would leave a fast Linux build idle while
       // macOS compiles for another ten minutes.
-      const justFinished = job.legs.filter(
-        (leg) => leg.status === 'completed' && !collected.has(leg.os),
+      // Retried every tick until each finished platform's files are actually on
+      // disk. GitHub can report a job complete a moment before its artifact is
+      // listable, and trying only once left those installers invisible until
+      // the whole matrix ended.
+      const awaitingArtifacts = job.legs.some(
+        (leg) =>
+          leg.status === 'completed' &&
+          (!leg.conclusion || leg.conclusion === 'success') &&
+          !job.artifacts.some((artifact) => artifact.os === leg.os),
       );
-      if (justFinished.length) {
-        for (const leg of justFinished) collected.add(leg.os);
-        await this.collectArtifacts(job, runId);
-      }
+      if (awaitingArtifacts) await this.collectArtifacts(job, runId);
 
       const allLegsFinished =
         runJobs.length > 0 && runJobs.every((leg) => leg.status === 'completed');
@@ -305,7 +313,24 @@ export class JobStore {
   private async finishBuild(job: Job, runId: number, conclusion: string): Promise<void> {
     job.status = 'collecting';
     this.persist(job);
-    await this.collectArtifacts(job, runId);
+
+    const expected = job.legs
+      .filter((leg) => leg.status === 'completed' && (!leg.conclusion || leg.conclusion === 'success'))
+      .map((leg) => leg.os);
+
+    for (let attempt = 0; attempt < ARTIFACT_SETTLE_ATTEMPTS; attempt++) {
+      await this.collectArtifacts(job, runId);
+      const have = new Set(job.artifacts.map((artifact) => artifact.os));
+      if (expected.every((os) => have.has(os))) break;
+      if (attempt === ARTIFACT_SETTLE_ATTEMPTS - 1) {
+        const missing = expected.filter((os) => !have.has(os));
+        if (missing.length) {
+          job.log.push(`\u26a0 No artifact appeared for ${missing.join(', ')}.`);
+        }
+        break;
+      }
+      await sleep(ARTIFACT_SETTLE_MS);
+    }
 
     if (!job.artifacts.length) {
       throw new Error(`Run concluded "${conclusion}" without producing artifacts.`);

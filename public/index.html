@@ -90,15 +90,23 @@ function ago(ms) {
 
 const host = (url) => { try { return new URL(url).host; } catch { return url; } };
 
-const legState = (leg) =>
-  !leg ? 'queued' : leg.conclusion && leg.conclusion !== 'success' ? 'failed' : leg.status;
+/* A platform that compiled but has no files yet is still being downloaded from
+   GitHub. Saying "Built" there reads as finished while nothing is clickable. */
+function legState(leg, hasFiles, jobStatus) {
+  if (!leg) return 'queued';
+  if (leg.conclusion && leg.conclusion !== 'success') return 'failed';
+  if (leg.status === 'completed' && !hasFiles && !TERMINAL.includes(jobStatus)) return 'fetching';
+  return leg.status;
+}
 
-function legWord(leg, jobStatus) {
+function legWord(leg, jobStatus, hasFiles) {
   if (!leg) return TERMINAL.includes(jobStatus) ? 'Not run' : 'Waiting';
   if (leg.conclusion && leg.conclusion !== 'success') {
     return leg.conclusion === 'cancelled' ? 'Cancelled' : 'Failed';
   }
-  if (leg.status === 'completed') return 'Built';
+  if (leg.status === 'completed') {
+    return hasFiles || TERMINAL.includes(jobStatus) ? 'Built' : 'Fetching installers\u2026';
+  }
   if (leg.status === 'in_progress') return 'Building';
   return 'Queued';
 }
@@ -199,10 +207,10 @@ function paint(card, job) {
 
   for (const [os, row] of n.rowMap) {
     const leg = legs.get(os);
-    setAttr(row.row, 'data-s', legState(leg));
-    setText(row.word, legWord(leg, job.status));
-
     const files = filesByOs.get(os) || [];
+    setAttr(row.row, 'data-s', legState(leg, files.length > 0, job.status));
+    setText(row.word, legWord(leg, job.status, files.length > 0));
+
     if (row.files.childElementCount !== files.length) {
       row.files.replaceChildren(
         ...files.map((f) => {

@@ -169,6 +169,8 @@ fieldset.checks legend { padding:0; font-size:14px; font-weight:500; margin-bott
 .plat-row[data-s=in_progress] .plat-state { color:var(--run); }
 .plat-row[data-s=in_progress] .dot { background:var(--run); animation:breathe 1.6s ease-in-out infinite; }
 @keyframes breathe { 0%,100% { opacity:.35; } 50% { opacity:1; } }
+.plat-row[data-s=fetching] .plat-state { color:var(--run); }
+.plat-row[data-s=fetching] .dot { background:var(--run); animation:breathe 1.6s ease-in-out infinite; }
 .plat-row[data-s=completed] .plat-state { color:var(--brand); }
 .plat-row[data-s=completed] .dot { background:var(--brand); }
 .plat-row[data-s=failed] .plat-state { color:var(--fail); }
